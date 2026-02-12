@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: imlocl-postgres
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: imlocl
+    ports:
+      - "5433:5432"
+    volumes:
+      - imlocl_pg:/var/lib/postgresql/data
+
+volumes:
+  imlocl_pg:

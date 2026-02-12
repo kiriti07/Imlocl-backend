@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Partner {
+  id           String        @id @default(uuid())
+  phone        String        @unique
+  role         PartnerRole
+  city         String?
+  isActive     Boolean       @default(true)
+  isAvailable  Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  status       PartnerStatus @default(PENDING)
+  address      String?
+  businessName String?
+  email        String?
+  experience   String?
+  fullName     String
+  partnerType  String
+  laundryShop  LaundryShop?
+  meatShop     MeatShop?
+}
+
+model LaundryShop {
+  id        String   @id @default(uuid())
+  partnerId String   @unique
+  shopName  String
+  address   String?
+  city      String?
+  lat       Float?
+  lng       Float?
+  isOpen    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  partner   Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+}
+
+model MeatShop {
+  id        String   @id @default(uuid())
+  partnerId String   @unique
+  shopName  String
+  address   String?
+  city      String?
+  lat       Float?
+  lng       Float?
+  isOpen    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  partner   Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+}
+
+enum PartnerStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PartnerRole {
+  LAUNDRY_PARTNER
+  MEAT_PARTNER
+  TAILOR
+  COOK
+  DELIVERY
+}
