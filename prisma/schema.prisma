@@ -25,6 +25,7 @@ model Partner {
   partnerType  String
   laundryShop  LaundryShop?
   meatShop     MeatShop?
+  token        String?        @unique
 }
 
 model LaundryShop {
@@ -44,16 +45,47 @@ model LaundryShop {
 model MeatShop {
   id        String   @id @default(uuid())
   partnerId String   @unique
+
   shopName  String
   address   String?
   city      String?
   lat       Float?
   lng       Float?
+
   isOpen    Boolean  @default(true)
+
+  // ✅ timings
+  openTime  String?  // "09:00"
+  closeTime String?  // "21:00"
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
   partner   Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  items     MeatItem[]
 }
+
+model MeatItem {
+  id          String   @id @default(uuid())
+  meatShopId  String
+
+  name        String
+  unit        String
+  price       Float
+  minQty      Float?
+  stepQty     Float?
+  inStock     Boolean  @default(true)
+
+  imageUrl    String?  // ✅ NEW
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  shop        MeatShop @relation(fields: [meatShopId], references: [id], onDelete: Cascade)
+
+  @@index([meatShopId])
+}
+
 
 enum PartnerStatus {
   PENDING
