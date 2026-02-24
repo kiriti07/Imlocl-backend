@@ -1,0 +1,4 @@
+-- This is a manual migration to add designer tables
+-- DesignerProfile table created manually
+-- Design table created manually
+-- Indexes created manually

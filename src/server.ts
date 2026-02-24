@@ -3,6 +3,8 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { PrismaClient, PartnerRole, PartnerStatus } from "@prisma/client";
+import { uploadMultipleToAzure } from "./utils/azure-storage-helper";
+import { ensureContainerExists } from "./config/azure-storage";
 import crypto from "crypto";
 import multer from "multer";
 import path from "path";
@@ -29,18 +31,14 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 app.use("/uploads", express.static(UPLOAD_DIR));
 
 // Multer setup
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname || "").toLowerCase() || ".jpg";
-    cb(null, `${crypto.randomUUID()}${ext}`);
-  },
-});
+const storage = multer.memoryStorage(); // Store in memory instead of disk
 
 const upload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
 });
+
+ensureContainerExists().catch(console.error);
 
 // ----------------------
 // helpers
@@ -603,4 +601,1192 @@ async function main() {
 main().catch((err) => {
   console.error("❌ Failed to start server:", err);
   process.exit(1);
+});
+
+// Add after your existing routes, before the server start
+
+// ============================================
+// DESIGNER/TAILOR PUBLIC ENDPOINTS
+// ============================================
+
+// ✅ PUBLIC: Get all approved designers/tailors
+app.get("/api/public/designers", async (_req, res) => {
+  try {
+    const designers = await prisma.partner.findMany({
+      where: {
+        role: { in: [PartnerRole.TAILOR] },
+        status: PartnerStatus.APPROVED,
+        isActive: true,
+      },
+      include: {
+        designerProfile: {
+          include: {
+            portfolio: {
+              where: { status: "published" },
+              orderBy: { createdAt: "desc" },
+              take: 4, // Latest 4 designs as preview
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    // Transform to match frontend expected format
+    const result = designers.map((designer: any) => ({
+      id: designer.id,
+      name: designer.fullName,
+      avatar: designer.designerProfile?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(designer.fullName)}&background=random`,
+      coverImage: designer.designerProfile?.coverImage || "https://images.unsplash.com/photo-1558618666-fcd25c85f82e?w=800&h=400&fit=crop",
+      bio: designer.designerProfile?.bio || `${designer.fullName} is a talented fashion designer.`,
+      speciality: designer.designerProfile?.specialties?.[0] || "Fashion Design",
+      location: designer.city || "Location not specified",
+      rating: 4.8, // You'll need to implement a review system
+      reviewCount: 0,
+      designCount: designer.designerProfile?._count?.portfolio || 0,
+      experience: designer.experience || "Experienced",
+      verified: true,
+      tags: designer.designerProfile?.specialties || ["Fashion"],
+    }));
+
+    return res.json({ designers: result });
+  } catch (e: any) {
+    console.error("PUBLIC DESIGNERS ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ PUBLIC: Get single designer by ID with full portfolio
+app.get("/api/public/designers/:id", async (req, res) => {
+  try {
+    const id = s(req.params.id);
+    if (!id) return res.status(400).json({ message: "id is required" });
+
+    const designer = await prisma.partner.findFirst({
+      where: {
+        id,
+        role: { in: [PartnerRole.TAILOR] },
+        status: PartnerStatus.APPROVED,
+        isActive: true,
+      },
+      include: {
+        designerProfile: {
+          include: {
+            portfolio: {
+              where: { status: "published" },
+              orderBy: { createdAt: "desc" },
+            },
+          },
+        },
+      },
+    });
+
+    if (!designer) {
+      return res.status(404).json({ message: "Designer not found" });
+    }
+
+    const result = {
+      id: designer.id,
+      name: designer.fullName,
+      avatar: designer.designerProfile?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(designer.fullName)}&background=random`,
+      coverImage: designer.designerProfile?.coverImage || "https://images.unsplash.com/photo-1558618666-fcd25c85f82e?w=800&h=400&fit=crop",
+      bio: designer.designerProfile?.bio || `${designer.fullName} is a talented fashion designer.`,
+      speciality: designer.designerProfile?.specialties?.[0] || "Fashion Design",
+      location: designer.city || "Location not specified",
+      rating: 4.8,
+      reviewCount: 0,
+      designCount: designer.designerProfile?.portfolio?.length || 0,
+      experience: designer.experience || "Experienced",
+      verified: true,
+      tags: designer.designerProfile?.specialties || ["Fashion"],
+      designs: (designer.designerProfile?.portfolio || []).map((d: any) => ({
+        id: d.id,
+        title: d.title,
+        description: d.description,
+        images: d.images,
+        price: d.price,
+        currency: d.currency,
+        category: d.category,
+        tags: d.tags,
+        designerId: designer.id,
+        designerName: designer.fullName,
+        designerAvatar: designer.designerProfile?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(designer.fullName)}&background=random`,
+        isTrending: d.isTrending,
+        isNew: d.isNew,
+        likes: d.likes,
+        views: d.views,
+        inquiries: d.inquiries,
+        fabricType: d.fabricType,
+        deliveryTime: d.deliveryTime,
+      })),
+    };
+
+    return res.json({ designer: result });
+  } catch (e: any) {
+    console.error("PUBLIC DESIGNER BY ID ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ PUBLIC: Get all published designs
+app.get("/api/public/designs", async (req, res) => {
+  try {
+    const category = req.query.category as string || 'all';
+    const limit = Number(req.query.limit) || 50;
+    const offset = Number(req.query.offset) || 0;
+
+    const where: any = {
+      status: "published",
+    };
+
+    if (category !== 'all') {
+      where.category = category;
+    }
+
+    const designs = await prisma.design.findMany({
+      where,
+      include: {
+        designer: {
+          include: {
+            partner: true,
+          },
+        },
+      },
+      orderBy: [
+        { isTrending: 'desc' },
+        { createdAt: 'desc' },
+      ],
+      take: limit,
+      skip: offset,
+    });
+
+    const trendingCount = await prisma.design.count({
+      where: { ...where, isTrending: true },
+    });
+
+    const newCount = await prisma.design.count({
+      where: { 
+        ...where, 
+        createdAt: { 
+          gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days
+        } 
+      },
+    });
+
+    const result = designs.map((design: any) => ({
+      id: design.id,
+      title: design.title,
+      description: design.description,
+      images: design.images,
+      price: design.price,
+      currency: design.currency,
+      category: design.category,
+      tags: design.tags,
+      designerId: design.designer.partner.id,
+      designerName: design.designer.partner.fullName,
+      designerAvatar: design.designer.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(design.designer.partner.fullName)}&background=random`,
+      isTrending: design.isTrending,
+      isNew: design.isNew,
+      likes: design.likes,
+      views: design.views,
+      inquiries: design.inquiries,
+      fabricType: design.fabricType,
+      deliveryTime: design.deliveryTime,
+    }));
+
+    return res.json({ 
+      designs: result,
+      meta: {
+        total: await prisma.design.count({ where }),
+        trending: trendingCount,
+        new: newCount,
+      },
+    });
+  } catch (e: any) {
+    console.error("PUBLIC DESIGNS ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ PUBLIC: Get single design by ID
+app.get("/api/public/designs/:id", async (req, res) => {
+  try {
+    const id = s(req.params.id);
+    if (!id) return res.status(400).json({ message: "id is required" });
+
+    const design = await prisma.design.findFirst({
+      where: {
+        id,
+        status: "published",
+      },
+      include: {
+        designer: {
+          include: {
+            partner: true,
+          },
+        },
+      },
+    });
+
+    if (!design) {
+      return res.status(404).json({ message: "Design not found" });
+    }
+
+    // Increment view count
+    await prisma.design.update({
+      where: { id },
+      data: { views: { increment: 1 } },
+    });
+
+    const result = {
+      id: design.id,
+      title: design.title,
+      description: design.description,
+      images: design.images,
+      price: design.price,
+      currency: design.currency,
+      category: design.category,
+      tags: design.tags,
+      designerId: design.designer.partner.id,
+      designerName: design.designer.partner.fullName,
+      designerAvatar: design.designer.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(design.designer.partner.fullName)}&background=random`,
+      isTrending: design.isTrending,
+      isNew: design.isNew,
+      likes: design.likes,
+      views: design.views + 1, // +1 for current view
+      inquiries: design.inquiries,
+      fabricType: design.fabricType,
+      deliveryTime: design.deliveryTime,
+    };
+
+    return res.json({ design: result });
+  } catch (e: any) {
+    console.error("PUBLIC DESIGN BY ID ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ============================================
+// DESIGNER/TAILOR PRIVATE ENDPOINTS (Partner App)
+// ============================================
+
+// ✅ Get designer profile (for partner app)
+app.get("/api/designer/profile", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    // Check if user is a designer/tailor
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied. Not a designer/tailor." });
+    }
+
+    // Get or create designer profile
+    let designerProfile = await prisma.designerProfile.findUnique({
+      where: { partnerId: auth.partner.id },
+      include: { portfolio: true },
+    });
+
+    if (!designerProfile) {
+      designerProfile = await prisma.designerProfile.create({
+        data: {
+          partnerId: auth.partner.id,
+          specialties: ["Fashion"],
+        },
+        include: { portfolio: true },
+      });
+    }
+
+    return res.json({ profile: designerProfile });
+  } catch (e: any) {
+    console.error("DESIGNER PROFILE ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Update designer profile
+app.post("/api/designer/profile", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const { bio, specialties, avatar, coverImage } = req.body;
+
+    const profile = await prisma.designerProfile.upsert({
+      where: { partnerId: auth.partner.id },
+      update: { bio, specialties, avatar, coverImage },
+      create: {
+        partnerId: auth.partner.id,
+        bio,
+        specialties: specialties || ["Fashion"],
+        avatar,
+        coverImage,
+      },
+    });
+
+    return res.json({ profile });
+  } catch (e: any) {
+    console.error("UPDATE DESIGNER PROFILE ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Get designer's designs (for partner app)
+app.get("/api/designer/designs", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const designs = await prisma.design.findMany({
+      where: {
+        designer: {
+          partnerId: auth.partner.id,
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.json({ designs });
+  } catch (e: any) {
+    console.error("GET DESIGNER DESIGNS ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Create new design
+app.post("/api/designer/designs", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    // Get or create designer profile
+    let designerProfile = await prisma.designerProfile.findUnique({
+      where: { partnerId: auth.partner.id },
+    });
+
+    if (!designerProfile) {
+      designerProfile = await prisma.designerProfile.create({
+        data: {
+          partnerId: auth.partner.id,
+          specialties: ["Fashion"],
+        },
+      });
+    }
+
+    const design = await prisma.design.create({
+      data: {
+        designerId: designerProfile.id,
+        title: s(req.body.title),
+        description: req.body.description,
+        category: s(req.body.category),
+        price: Number(req.body.price),
+        currency: req.body.currency || "₹",
+        images: req.body.images || [],
+        tags: req.body.tags || [],
+        fabricType: req.body.fabricType,
+        deliveryTime: req.body.deliveryTime,
+        readyToWear: req.body.readyToWear || false,
+        customizationOptions: req.body.customizationOptions || [],
+        status: req.body.status || "draft",
+      },
+    });
+
+    return res.json({ design });
+  } catch (e: any) {
+    console.error("CREATE DESIGN ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Update design
+app.put("/api/designer/designs/:id", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const designId = s(req.params.id);
+
+    // Verify ownership
+    const existing = await prisma.design.findFirst({
+      where: {
+        id: designId,
+        designer: {
+          partnerId: auth.partner.id,
+        },
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: "Design not found" });
+    }
+
+    const updated = await prisma.design.update({
+      where: { id: designId },
+      data: {
+        title: req.body.title ? s(req.body.title) : undefined,
+        description: req.body.description,
+        category: req.body.category ? s(req.body.category) : undefined,
+        price: req.body.price ? Number(req.body.price) : undefined,
+        images: req.body.images,
+        tags: req.body.tags,
+        fabricType: req.body.fabricType,
+        deliveryTime: req.body.deliveryTime,
+        readyToWear: req.body.readyToWear,
+        customizationOptions: req.body.customizationOptions,
+        status: req.body.status,
+      },
+    });
+
+    return res.json({ design: updated });
+  } catch (e: any) {
+    console.error("UPDATE DESIGN ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Delete design (soft delete)
+app.delete("/api/designer/designs/:id", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const designId = s(req.params.id);
+
+    // Verify ownership
+    const existing = await prisma.design.findFirst({
+      where: {
+        id: designId,
+        designer: {
+          partnerId: auth.partner.id,
+        },
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: "Design not found" });
+    }
+
+    await prisma.design.delete({
+      where: { id: designId },
+    });
+
+    return res.json({ success: true });
+  } catch (e: any) {
+    console.error("DELETE DESIGN ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Upload design image
+app.post("/api/designer/designs/:id/image", upload.single("image"), async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const designId = s(req.params.id);
+
+    // Verify ownership
+    const existing = await prisma.design.findFirst({
+      where: {
+        id: designId,
+        designer: {
+          partnerId: auth.partner.id,
+        },
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: "Design not found" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: "No image uploaded" });
+    }
+
+    const imageUrl = `http://localhost:${PORT}/uploads/${req.file.filename}`;
+
+    // Add to images array
+    const images = [...(existing.images || []), imageUrl];
+
+    await prisma.design.update({
+      where: { id: designId },
+      data: { images },
+    });
+
+    return res.json({ imageUrl, images });
+  } catch (e: any) {
+    console.error("UPLOAD DESIGN IMAGE ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ============================================
+// DESIGNER CATEGORY MANAGEMENT ENDPOINTS
+// ============================================
+
+// ✅ Get all categories for a designer
+app.get("/api/designer/categories", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    // Get designer profile
+    const designerProfile = await prisma.designerProfile.findUnique({
+      where: { partnerId: auth.partner.id },
+    });
+
+    if (!designerProfile) {
+      return res.status(404).json({ message: "Designer profile not found" });
+    }
+
+    const categories = await prisma.designerCategory.findMany({
+      where: { designerId: designerProfile.id },
+      include: {
+        subcategories: {
+          include: {
+            items: {
+              include: {
+                sizes: true,
+              },
+            },
+          },
+          orderBy: { displayOrder: 'asc' },
+        },
+      },
+      orderBy: { displayOrder: 'asc' },
+    });
+
+    return res.json({ categories });
+  } catch (e: any) {
+    console.error("GET CATEGORIES ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Create a new category
+app.post("/api/designer/categories", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const { name, isDefault = false } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ message: "Category name is required" });
+    }
+
+    // Get designer profile
+    const designerProfile = await prisma.designerProfile.findUnique({
+      where: { partnerId: auth.partner.id },
+    });
+
+    if (!designerProfile) {
+      return res.status(404).json({ message: "Designer profile not found" });
+    }
+
+    // Get max display order
+    const lastCategory = await prisma.designerCategory.findFirst({
+      where: { designerId: designerProfile.id },
+      orderBy: { displayOrder: 'desc' },
+    });
+
+    const displayOrder = lastCategory ? lastCategory.displayOrder + 1 : 0;
+
+    const category = await prisma.designerCategory.create({
+      data: {
+        designerId: designerProfile.id,
+        name,
+        isDefault,
+        displayOrder,
+      },
+    });
+
+    return res.json({ category });
+  } catch (e: any) {
+    console.error("CREATE CATEGORY ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Update a category
+app.put("/api/designer/categories/:id", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const categoryId = s(req.params.id);
+    const { name, displayOrder } = req.body;
+
+    // Verify ownership
+    const designerProfile = await prisma.designerProfile.findUnique({
+      where: { partnerId: auth.partner.id },
+    });
+
+    if (!designerProfile) {
+      return res.status(404).json({ message: "Designer profile not found" });
+    }
+
+    const category = await prisma.designerCategory.findFirst({
+      where: {
+        id: categoryId,
+        designerId: designerProfile.id,
+      },
+    });
+
+    if (!category) {
+      return res.status(404).json({ message: "Category not found" });
+    }
+
+    const updated = await prisma.designerCategory.update({
+      where: { id: categoryId },
+      data: {
+        name: name || undefined,
+        displayOrder: displayOrder !== undefined ? displayOrder : undefined,
+      },
+    });
+
+    return res.json({ category: updated });
+  } catch (e: any) {
+    console.error("UPDATE CATEGORY ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Delete a category
+app.delete("/api/designer/categories/:id", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const categoryId = s(req.params.id);
+
+    // Verify ownership
+    const designerProfile = await prisma.designerProfile.findUnique({
+      where: { partnerId: auth.partner.id },
+    });
+
+    if (!designerProfile) {
+      return res.status(404).json({ message: "Designer profile not found" });
+    }
+
+    const category = await prisma.designerCategory.findFirst({
+      where: {
+        id: categoryId,
+        designerId: designerProfile.id,
+      },
+    });
+
+    if (!category) {
+      return res.status(404).json({ message: "Category not found" });
+    }
+
+    // Don't allow deleting default categories? Or allow?
+    if (category.isDefault) {
+      return res.status(400).json({ message: "Cannot delete default category" });
+    }
+
+    await prisma.designerCategory.delete({
+      where: { id: categoryId },
+    });
+
+    return res.json({ success: true });
+  } catch (e: any) {
+    console.error("DELETE CATEGORY ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Create a new subcategory
+app.post("/api/designer/subcategories", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const { categoryId, name } = req.body;
+
+    if (!categoryId || !name) {
+      return res.status(400).json({ message: "categoryId and name are required" });
+    }
+
+    // Verify ownership
+    const designerProfile = await prisma.designerProfile.findUnique({
+      where: { partnerId: auth.partner.id },
+    });
+
+    if (!designerProfile) {
+      return res.status(404).json({ message: "Designer profile not found" });
+    }
+
+    const category = await prisma.designerCategory.findFirst({
+      where: {
+        id: categoryId,
+        designerId: designerProfile.id,
+      },
+    });
+
+    if (!category) {
+      return res.status(404).json({ message: "Category not found" });
+    }
+
+    // Get max display order
+    const lastSubcategory = await prisma.designerSubcategory.findFirst({
+      where: { categoryId },
+      orderBy: { displayOrder: 'desc' },
+    });
+
+    const displayOrder = lastSubcategory ? lastSubcategory.displayOrder + 1 : 0;
+
+    const subcategory = await prisma.designerSubcategory.create({
+      data: {
+        categoryId,
+        name,
+        displayOrder,
+      },
+    });
+
+    return res.json({ subcategory });
+  } catch (e: any) {
+    console.error("CREATE SUBCATEGORY ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Update a subcategory
+app.put("/api/designer/subcategories/:id", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const subcategoryId = s(req.params.id);
+    const { name, displayOrder } = req.body;
+
+    // Verify ownership through category
+    const subcategory = await prisma.designerSubcategory.findFirst({
+      where: {
+        id: subcategoryId,
+        category: {
+          designer: {
+            partnerId: auth.partner.id,
+          },
+        },
+      },
+    });
+
+    if (!subcategory) {
+      return res.status(404).json({ message: "Subcategory not found" });
+    }
+
+    const updated = await prisma.designerSubcategory.update({
+      where: { id: subcategoryId },
+      data: {
+        name: name || undefined,
+        displayOrder: displayOrder !== undefined ? displayOrder : undefined,
+      },
+    });
+
+    return res.json({ subcategory: updated });
+  } catch (e: any) {
+    console.error("UPDATE SUBCATEGORY ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Delete a subcategory
+app.delete("/api/designer/subcategories/:id", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const subcategoryId = s(req.params.id);
+
+    // Verify ownership
+    const subcategory = await prisma.designerSubcategory.findFirst({
+      where: {
+        id: subcategoryId,
+        category: {
+          designer: {
+            partnerId: auth.partner.id,
+          },
+        },
+      },
+    });
+
+    if (!subcategory) {
+      return res.status(404).json({ message: "Subcategory not found" });
+    }
+
+    await prisma.designerSubcategory.delete({
+      where: { id: subcategoryId },
+    });
+
+    return res.json({ success: true });
+  } catch (e: any) {
+    console.error("DELETE SUBCATEGORY ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Create a new item
+app.post("/api/designer/items", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const {
+      subcategoryId,
+      name,
+      description,
+      price,
+      discountPrice,
+      currency = "₹",
+      images = [],
+      videos = [],
+      availability,
+      sizes = [],
+      measurements,
+      deliveryTime,
+      customizationTime,
+    } = req.body;
+
+    if (!subcategoryId || !name || !price || !availability) {
+      return res.status(400).json({ message: "Missing required fields" });
+    }
+
+    // Verify ownership
+    const subcategory = await prisma.designerSubcategory.findFirst({
+      where: {
+        id: subcategoryId,
+        category: {
+          designer: {
+            partnerId: auth.partner.id,
+          },
+        },
+      },
+    });
+
+    if (!subcategory) {
+      return res.status(404).json({ message: "Subcategory not found" });
+    }
+
+    // Create item with transaction to also create sizes
+    const result = await prisma.$transaction(async (tx) => {
+      const item = await tx.designerItem.create({
+        data: {
+          subcategoryId,
+          name,
+          description,
+          price: Number(price),
+          discountPrice: discountPrice ? Number(discountPrice) : null,
+          currency,
+          images,
+          videos,
+          availability,
+          measurements: measurements || null,
+          deliveryTime,
+          customizationTime,
+        },
+      });
+
+      // Create sizes if provided and availability is READY_MADE
+      if (availability === 'READY_MADE' && sizes.length > 0) {
+        await tx.size.createMany({
+          data: sizes.map((size: string) => ({
+            itemId: item.id,
+            size,
+            inStock: true,
+          })),
+        });
+      }
+
+      return item;
+    });
+
+    return res.json({ item: result });
+  } catch (e: any) {
+    console.error("CREATE ITEM ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Update an item
+app.put("/api/designer/items/:id", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const itemId = s(req.params.id);
+    const {
+      name,
+      description,
+      price,
+      discountPrice,
+      images,
+      videos,
+      availability,
+      sizes,
+      measurements,
+      deliveryTime,
+      customizationTime,
+      isActive,
+    } = req.body;
+
+    // Verify ownership
+    const item = await prisma.designerItem.findFirst({
+      where: {
+        id: itemId,
+        subcategory: {
+          category: {
+            designer: {
+              partnerId: auth.partner.id,
+            },
+          },
+        },
+      },
+      include: { sizes: true },
+    });
+
+    if (!item) {
+      return res.status(404).json({ message: "Item not found" });
+    }
+
+    // Update with transaction
+    const result = await prisma.$transaction(async (tx) => {
+      const updated = await tx.designerItem.update({
+        where: { id: itemId },
+        data: {
+          name: name || undefined,
+          description: description !== undefined ? description : undefined,
+          price: price !== undefined ? Number(price) : undefined,
+          discountPrice: discountPrice !== undefined ? Number(discountPrice) : undefined,
+          images: images || undefined,
+          videos: videos || undefined,
+          availability: availability || undefined,
+          measurements: measurements || undefined,
+          deliveryTime: deliveryTime !== undefined ? deliveryTime : undefined,
+          customizationTime: customizationTime !== undefined ? customizationTime : undefined,
+          isActive: isActive !== undefined ? isActive : undefined,
+        },
+      });
+
+      // Update sizes if provided and availability is READY_MADE
+      if (availability === 'READY_MADE' && sizes) {
+        // Delete existing sizes
+        await tx.size.deleteMany({
+          where: { itemId },
+        });
+
+        // Create new sizes
+        if (sizes.length > 0) {
+          await tx.size.createMany({
+            data: sizes.map((size: string) => ({
+              itemId,
+              size,
+              inStock: true,
+            })),
+          });
+        }
+      }
+
+      return updated;
+    });
+
+    return res.json({ item: result });
+  } catch (e: any) {
+    console.error("UPDATE ITEM ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Delete an item
+app.delete("/api/designer/items/:id", async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const itemId = s(req.params.id);
+
+    // Verify ownership
+    const item = await prisma.designerItem.findFirst({
+      where: {
+        id: itemId,
+        subcategory: {
+          category: {
+            designer: {
+              partnerId: auth.partner.id,
+            },
+          },
+        },
+      },
+    });
+
+    if (!item) {
+      return res.status(404).json({ message: "Item not found" });
+    }
+
+    // This will cascade delete sizes due to onDelete: Cascade
+    await prisma.designerItem.delete({
+      where: { id: itemId },
+    });
+
+    return res.json({ success: true });
+  } catch (e: any) {
+    console.error("DELETE ITEM ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// Update the multi-image upload endpoint
+app.post("/api/designer/items/:id/images", upload.array("images", 8), async (req, res) => {
+  try {
+    console.log('=== MULTI-IMAGE UPLOAD REQUEST ===');
+    
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (auth.partner.role !== PartnerRole.TAILOR) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const itemId = s(req.params.id);
+    const files = req.files as Express.Multer.File[];
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ message: "No images uploaded" });
+    }
+
+    if (files.length < 3) {
+      return res.status(400).json({ message: "Minimum 3 images required" });
+    }
+
+    if (files.length > 8) {
+      return res.status(400).json({ message: "Maximum 8 images allowed" });
+    }
+
+    // Get the item with all related info
+    const item = await prisma.designerItem.findFirst({
+      where: {
+        id: itemId,
+        subcategory: {
+          category: {
+            designer: {
+              partnerId: auth.partner.id,
+            },
+          },
+        },
+      },
+      include: {
+        subcategory: {
+          include: {
+            category: {
+              include: {
+                designer: {
+                  include: {
+                    partner: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!item) {
+      return res.status(404).json({ message: "Item not found" });
+    }
+
+    // Get business name, category name, subcategory name
+    const businessName = item.subcategory.category.designer.partner.businessName || 
+                        item.subcategory.category.designer.partner.fullName;
+    const categoryName = item.subcategory.category.name;
+    const subcategoryName = item.subcategory.name;
+    const itemName = item.name;
+
+    // Upload to Azure Blob Storage
+    const uploadResults = await uploadMultipleToAzure(
+      files,
+      businessName,
+      categoryName,
+      subcategoryName,
+      itemName
+    );
+
+    const imageUrls = uploadResults.map(result => result.url);
+
+    // Update the item with image URLs
+    const updated = await prisma.designerItem.update({
+      where: { id: itemId },
+      data: { images: imageUrls },
+    });
+
+    console.log('Images uploaded to Azure successfully:', imageUrls);
+    return res.json({ images: updated.images });
+  } catch (e: any) {
+    console.error("UPLOAD ITEM IMAGES ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
 });

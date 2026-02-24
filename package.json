@@ -16,6 +16,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@azure/storage-blob": "^12.31.0",
     "@fastify/cors": "^11.2.0",
     "@fastify/env": "^5.0.3",
     "@prisma/client": "^6.15.0",

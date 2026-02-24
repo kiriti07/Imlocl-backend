@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -23,11 +24,144 @@ model Partner {
   experience   String?
   fullName     String
   partnerType  String
+  token        String?       @unique
+  
+  // Relations
   laundryShop  LaundryShop?
   meatShop     MeatShop?
-  token        String?        @unique
+  designerProfile DesignerProfile?
+  
+  @@map("Partner")
 }
 
+// SINGLE DesignerProfile model (remove the duplicate)
+model DesignerProfile {
+  id           String   @id @default(uuid())
+  partnerId    String   @unique
+  bio          String?
+  specialties  String[]
+  avatar       String?
+  coverImage   String?
+  experience   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  // Relations
+  partner      Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  portfolio    Design[]
+  categories   DesignerCategory[] // Add this line for the relation
+  
+  @@map("DesignerProfile")
+}
+
+model Design {
+  id              String   @id @default(uuid())
+  designerId      String
+  title           String
+  description     String?
+  category        String
+  subcategory     String?
+  price           Float
+  currency        String   @default("₹")
+  images          String[]
+  tags            String[]
+  isTrending      Boolean  @default(false)
+  isNew           Boolean  @default(true)
+  likes           Int      @default(0)
+  views           Int      @default(0)
+  inquiries       Int      @default(0)
+  status          String   @default("published")
+  fabricType      String?
+  deliveryTime    String?
+  readyToWear     Boolean  @default(false)
+  customizationOptions String[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  designer        DesignerProfile @relation(fields: [designerId], references: [id], onDelete: Cascade)
+  
+  @@index([designerId])
+  @@index([category])
+  @@index([isTrending])
+  @@map("Design")
+}
+
+// New models for categories and items
+model DesignerCategory {
+  id           String   @id @default(uuid())
+  designerId   String
+  name         String
+  isDefault    Boolean  @default(false)
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  // Relations
+  designer     DesignerProfile @relation(fields: [designerId], references: [id], onDelete: Cascade)
+  subcategories DesignerSubcategory[]
+  
+  @@unique([designerId, name])
+  @@map("DesignerCategory")
+}
+
+model DesignerSubcategory {
+  id           String   @id @default(uuid())
+  categoryId   String
+  name         String
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  // Relations
+  category     DesignerCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  items        DesignerItem[]
+  
+  @@unique([categoryId, name])
+  @@map("DesignerSubcategory")
+}
+
+model DesignerItem {
+  id              String         @id @default(uuid())
+  subcategoryId   String
+  name            String
+  description     String?
+  price           Float
+  discountPrice   Float?
+  currency        String         @default("₹")
+  images          String[]
+  videos          String[]
+  availability    String // Will store 'READY_MADE' or 'CUSTOMIZATION'
+  measurements    Json?
+  deliveryTime    String?
+  customizationTime String?
+  isActive        Boolean        @default(true)
+  views           Int            @default(0)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  
+  // Relations
+  subcategory     DesignerSubcategory @relation(fields: [subcategoryId], references: [id], onDelete: Cascade)
+  sizes           Size[]
+  
+  @@index([subcategoryId])
+  @@map("DesignerItem")
+}
+
+model Size {
+  id        String   @id @default(uuid())
+  itemId    String
+  size      String
+  inStock   Boolean  @default(true)
+  
+  // Relations
+  item      DesignerItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  
+  @@unique([itemId, size])
+  @@map("Size")
+}
+
+// Keep your existing models below
 model LaundryShop {
   id        String   @id @default(uuid())
   partnerId String   @unique
@@ -40,57 +174,53 @@ model LaundryShop {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   partner   Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  
+  @@map("LaundryShop")
 }
 
 model MeatShop {
   id        String   @id @default(uuid())
   partnerId String   @unique
-
   shopName  String
   address   String?
   city      String?
   lat       Float?
   lng       Float?
-
   isOpen    Boolean  @default(true)
-
-  // ✅ timings
-  openTime  String?  // "09:00"
-  closeTime String?  // "21:00"
-
+  openTime  String?
+  closeTime String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
   partner   Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
   items     MeatItem[]
+  
+  @@map("MeatShop")
 }
 
 model MeatItem {
   id          String   @id @default(uuid())
   meatShopId  String
-
   name        String
   unit        String
   price       Float
   minQty      Float?
   stepQty     Float?
   inStock     Boolean  @default(true)
-
-  imageUrl    String?  // ✅ NEW
-
+  imageUrl    String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-
   shop        MeatShop @relation(fields: [meatShopId], references: [id], onDelete: Cascade)
-
+  
   @@index([meatShopId])
+  @@map("MeatItem")
 }
-
 
 enum PartnerStatus {
   PENDING
   APPROVED
   REJECTED
+  
+  @@map("PartnerStatus")
 }
 
 enum PartnerRole {
@@ -99,4 +229,6 @@ enum PartnerRole {
   TAILOR
   COOK
   DELIVERY
+  
+  @@map("PartnerRole")
 }
