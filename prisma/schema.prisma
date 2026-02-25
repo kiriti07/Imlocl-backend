@@ -206,7 +206,8 @@ model MeatItem {
   minQty      Float?
   stepQty     Float?
   inStock     Boolean  @default(true)
-  imageUrl    String?
+  imageUrl    String?  // Single image URL (for backward compatibility)
+  images      String[] // Add this for multiple images
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   shop        MeatShop @relation(fields: [meatShopId], references: [id], onDelete: Cascade)

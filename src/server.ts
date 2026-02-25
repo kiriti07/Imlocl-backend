@@ -5,6 +5,9 @@ import cors from "cors";
 import { PrismaClient, PartnerRole, PartnerStatus } from "@prisma/client";
 import { uploadMultipleToAzure } from "./utils/azure-storage-helper";
 import { ensureContainerExists } from "./config/azure-storage";
+
+import { uploadMeatItemImage, uploadMultipleMeatItemImages } from "./utils/azure-storage-helper-meat";
+
 import crypto from "crypto";
 import multer from "multer";
 import path from "path";
@@ -427,7 +430,8 @@ app.post("/api/meatshop/toggle", async (req, res) => {
 });
 
 // ✅ Add item
-app.post("/api/meatshop/items", async (req, res) => {
+// ✅ Add item with Azure Blob Storage support
+app.post("/api/meatshop/items", upload.single("image"), async (req, res) => {
   try {
     const gate = await requireMeatPartnerApproved(req);
     if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
@@ -435,9 +439,8 @@ app.post("/api/meatshop/items", async (req, res) => {
     const shop = await ensureMeatShop(gate.partner.id);
 
     const name = s(req.body.name);
-    const unit = s(req.body.unit); // "kg" | "g" | "piece"
+    const unit = s(req.body.unit);
     const price = asFloat(req.body.price);
-
     const minQty = asFloat(req.body.minQty);
     const stepQty = asFloat(req.body.stepQty);
 
@@ -445,6 +448,7 @@ app.post("/api/meatshop/items", async (req, res) => {
       return res.status(400).json({ message: "name, unit, price are required" });
     }
 
+    // Create the item first
     const item = await prisma.meatItem.create({
       data: {
         meatShopId: shop.id,
@@ -454,8 +458,40 @@ app.post("/api/meatshop/items", async (req, res) => {
         minQty,
         stepQty,
         inStock: true,
+        imageUrl: null, // Will update if image uploaded
       },
     });
+
+    // If image was uploaded, save to Azure Blob Storage
+    let imageUrl = null;
+    if (req.file) {
+      try {
+        const shopName = shop.shopName;
+        const uploadResult = await uploadMeatItemImage(
+          req.file.buffer,
+          shopName,
+          name,
+          req.file.originalname
+        );
+        imageUrl = uploadResult.url;
+
+        // Update the item with the image URL
+        const updatedItem = await prisma.meatItem.update({
+          where: { id: item.id },
+          data: { imageUrl },
+        });
+
+        return res.json({ item: updatedItem, imageUrl });
+      } catch (uploadError) {
+        console.error("Image upload to Azure failed:", uploadError);
+        // Still return the item even if image upload fails
+        return res.json({ 
+          item, 
+          warning: "Item created but image upload failed",
+          imageUrl: null 
+        });
+      }
+    }
 
     return res.json({ item });
   } catch (e: any) {
@@ -530,6 +566,7 @@ app.delete("/api/meatshop/items/:id", async (req, res) => {
 // ----------------------
 // Upload image for an item you own
 // FormData field name must be: "image"
+// ✅ Upload image for an existing meat item to Azure Blob Storage
 app.post("/api/meatshop/items/:id/image", upload.single("image"), async (req, res) => {
   try {
     const gate = await requireMeatPartnerApproved(req);
@@ -541,21 +578,87 @@ app.post("/api/meatshop/items/:id/image", upload.single("image"), async (req, re
     const existing = await prisma.meatItem.findFirst({
       where: { id, meatShopId: shop.id },
     });
-    if (!existing) return res.status(404).json({ message: "Item not found" });
 
-    if (!req.file) return res.status(400).json({ message: "Missing file field 'image'" });
+    if (!existing) {
+      return res.status(404).json({ message: "Item not found" });
+    }
 
-    // Public URL (customer app can view)
-    const imageUrl = `http://localhost:${PORT}/uploads/${req.file.filename}`;
+    if (!req.file) {
+      return res.status(400).json({ message: "Missing file field 'image'" });
+    }
 
+    // Upload to Azure Blob Storage
+    const shopName = shop.shopName;
+    const uploadResult = await uploadMeatItemImage(
+      req.file.buffer,
+      shopName,
+      existing.name,
+      req.file.originalname
+    );
+
+    // Update the item with the Azure URL
     const updated = await prisma.meatItem.update({
       where: { id },
-      data: { imageUrl },
+      data: { imageUrl: uploadResult.url },
     });
 
-    return res.json({ item: updated, imageUrl });
+    console.log(`✅ Meat item image uploaded to Azure: ${uploadResult.url}`);
+    return res.json({ item: updated, imageUrl: uploadResult.url });
   } catch (e: any) {
     console.error("MEATSHOP/ITEM IMAGE UPLOAD ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+
+// ✅ Upload multiple images for a meat item
+app.post("/api/meatshop/items/:id/images", upload.array("images", 5), async (req, res) => {
+  try {
+    const gate = await requireMeatPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await ensureMeatShop(gate.partner.id);
+    const id = s(req.params.id);
+    const files = req.files as Express.Multer.File[];
+
+    const existing = await prisma.meatItem.findFirst({
+      where: { id, meatShopId: shop.id },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: "Item not found" });
+    }
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ message: "No images uploaded" });
+    }
+
+    if (files.length > 5) {
+      return res.status(400).json({ message: "Maximum 5 images allowed" });
+    }
+
+    // Upload all images to Azure
+    const uploadResults = await uploadMultipleMeatItemImages(
+      files,
+      shop.shopName,
+      existing.name
+    );
+
+    const imageUrls = uploadResults.map(result => result.url);
+
+    // For now, store just the first image (or you could modify schema to support multiple)
+    const updated = await prisma.meatItem.update({
+      where: { id },
+      data: { imageUrl: imageUrls[0] }, // Store first image
+    });
+
+    return res.json({ 
+      item: updated, 
+      imageUrls,
+      message: `${imageUrls.length} images uploaded successfully` 
+    });
+  } catch (e: any) {
+    console.error("MEATSHOP/MULTI-IMAGE UPLOAD ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
@@ -656,6 +759,7 @@ app.get("/api/public/designers", async (_req, res) => {
   }
 });
 
+
 // ✅ PUBLIC: Get single designer by ID with full portfolio
 app.get("/api/public/designers/:id", async (req, res) => {
   try {
@@ -672,9 +776,19 @@ app.get("/api/public/designers/:id", async (req, res) => {
       include: {
         designerProfile: {
           include: {
-            portfolio: {
-              where: { status: "published" },
-              orderBy: { createdAt: "desc" },
+            categories: {
+              include: {
+                subcategories: {
+                  include: {
+                    items: {
+                      where: { isActive: true },
+                      include: { sizes: true },
+                    },
+                  },
+                  orderBy: { displayOrder: 'asc' },
+                },
+              },
+              orderBy: { displayOrder: 'asc' },
             },
           },
         },
@@ -685,9 +799,34 @@ app.get("/api/public/designers/:id", async (req, res) => {
       return res.status(404).json({ message: "Designer not found" });
     }
 
+    // Transform categories data
+    const categories = designer.designerProfile?.categories?.map((cat: any) => ({
+      id: cat.id,
+      name: cat.name,
+      isDefault: cat.isDefault,
+      subcategories: cat.subcategories?.map((sub: any) => ({
+        id: sub.id,
+        name: sub.name,
+        items: sub.items?.map((item: any) => ({
+          id: item.id,
+          title: item.name,
+          description: item.description || '',
+          images: item.images,
+          price: item.price,
+          discountPrice: item.discountPrice,
+          currency: item.currency,
+          availability: item.availability,
+          deliveryTime: item.deliveryTime || item.customizationTime,
+          sizes: item.sizes?.map((s: any) => s.size) || [],
+          views: item.views,
+          createdAt: item.createdAt,
+        })) || [],
+      })) || [],
+    })) || [];
+
     const result = {
       id: designer.id,
-      name: designer.fullName,
+      name: designer.businessName || designer.fullName,
       avatar: designer.designerProfile?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(designer.fullName)}&background=random`,
       coverImage: designer.designerProfile?.coverImage || "https://images.unsplash.com/photo-1558618666-fcd25c85f82e?w=800&h=400&fit=crop",
       bio: designer.designerProfile?.bio || `${designer.fullName} is a talented fashion designer.`,
@@ -699,26 +838,7 @@ app.get("/api/public/designers/:id", async (req, res) => {
       experience: designer.experience || "Experienced",
       verified: true,
       tags: designer.designerProfile?.specialties || ["Fashion"],
-      designs: (designer.designerProfile?.portfolio || []).map((d: any) => ({
-        id: d.id,
-        title: d.title,
-        description: d.description,
-        images: d.images,
-        price: d.price,
-        currency: d.currency,
-        category: d.category,
-        tags: d.tags,
-        designerId: designer.id,
-        designerName: designer.fullName,
-        designerAvatar: designer.designerProfile?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(designer.fullName)}&background=random`,
-        isTrending: d.isTrending,
-        isNew: d.isNew,
-        likes: d.likes,
-        views: d.views,
-        inquiries: d.inquiries,
-        fabricType: d.fabricType,
-        deliveryTime: d.deliveryTime,
-      })),
+      categories: categories, // This is the key addition
     };
 
     return res.json({ designer: result });
@@ -729,75 +849,111 @@ app.get("/api/public/designers/:id", async (req, res) => {
 });
 
 // ✅ PUBLIC: Get all published designs
+// Replace this section in your server.ts
+
+// ✅ PUBLIC: Get all published designs (from DesignerItem)
 app.get("/api/public/designs", async (req, res) => {
   try {
     const category = req.query.category as string || 'all';
     const limit = Number(req.query.limit) || 50;
     const offset = Number(req.query.offset) || 0;
 
+    // Build where clause
     const where: any = {
-      status: "published",
+      isActive: true,
+      // Only show items that have images
+      images: { isEmpty: false },
     };
 
+    // Filter by category if needed
     if (category !== 'all') {
-      where.category = category;
+      where.subcategory = {
+        category: {
+          name: {
+            equals: category,
+            mode: 'insensitive'
+          }
+        }
+      };
     }
 
-    const designs = await prisma.design.findMany({
+    // Get items from DesignerItem table
+    const items = await prisma.designerItem.findMany({
       where,
       include: {
-        designer: {
+        subcategory: {
           include: {
-            partner: true,
-          },
+            category: {
+              include: {
+                designer: {
+                  include: {
+                    partner: true
+                  }
+                }
+              }
+            }
+          }
         },
+        sizes: true,
       },
       orderBy: [
-        { isTrending: 'desc' },
         { createdAt: 'desc' },
       ],
       take: limit,
       skip: offset,
     });
 
-    const trendingCount = await prisma.design.count({
-      where: { ...where, isTrending: true },
-    });
-
-    const newCount = await prisma.design.count({
-      where: { 
-        ...where, 
-        createdAt: { 
-          gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days
-        } 
+    // Count trending items (you can define your own logic)
+    const trendingCount = await prisma.designerItem.count({
+      where: {
+        ...where,
+        views: { gt: 100 } // Example: items with more than 100 views are trending
       },
     });
 
-    const result = designs.map((design: any) => ({
-      id: design.id,
-      title: design.title,
-      description: design.description,
-      images: design.images,
-      price: design.price,
-      currency: design.currency,
-      category: design.category,
-      tags: design.tags,
-      designerId: design.designer.partner.id,
-      designerName: design.designer.partner.fullName,
-      designerAvatar: design.designer.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(design.designer.partner.fullName)}&background=random`,
-      isTrending: design.isTrending,
-      isNew: design.isNew,
-      likes: design.likes,
-      views: design.views,
-      inquiries: design.inquiries,
-      fabricType: design.fabricType,
-      deliveryTime: design.deliveryTime,
+    // Count new items (created in last 7 days)
+    const newCount = await prisma.designerItem.count({
+      where: {
+        ...where,
+        createdAt: {
+          gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+        }
+      },
+    });
+
+    // Transform to match frontend expected format
+    const result = items.map((item: any) => ({
+      id: item.id,
+      title: item.name,
+      description: item.description || '',
+      images: item.images,
+      price: item.price,
+      discountPrice: item.discountPrice,
+      currency: item.currency,
+      category: item.subcategory.category.name.toLowerCase(),
+      subcategory: item.subcategory.name,
+      tags: [], // You can add tags logic here if needed
+      designerId: item.subcategory.category.designer.partner.id,
+      designerName: item.subcategory.category.designer.partner.businessName || 
+                     item.subcategory.category.designer.partner.fullName,
+      designerAvatar: item.subcategory.category.designer.avatar || 
+                      `https://ui-avatars.com/api/?name=${encodeURIComponent(item.subcategory.category.designer.partner.fullName)}&background=random`,
+      isTrending: item.views > 100, // Custom logic for trending
+      isNew: (new Date().getTime() - new Date(item.createdAt).getTime()) < 7 * 24 * 60 * 60 * 1000,
+      likes: item.views, // Using views as likes for now
+      views: item.views,
+      inquiries: 0, // You can add inquiry tracking later
+      fabricType: null,
+      deliveryTime: item.deliveryTime || item.customizationTime,
+      sizes: item.sizes.map((s: any) => s.size),
+      availability: item.availability,
+      createdAt: item.createdAt,
     }));
 
     return res.json({ 
       designs: result,
       meta: {
-        total: await prisma.design.count({ where }),
+        total: items.length,
         trending: trendingCount,
         new: newCount,
       },
@@ -808,55 +964,72 @@ app.get("/api/public/designs", async (req, res) => {
   }
 });
 
-// ✅ PUBLIC: Get single design by ID
+
+// ✅ PUBLIC: Get single design by ID (from DesignerItem)
 app.get("/api/public/designs/:id", async (req, res) => {
   try {
     const id = s(req.params.id);
     if (!id) return res.status(400).json({ message: "id is required" });
 
-    const design = await prisma.design.findFirst({
+    const item = await prisma.designerItem.findFirst({
       where: {
         id,
-        status: "published",
+        isActive: true,
       },
       include: {
-        designer: {
+        subcategory: {
           include: {
-            partner: true,
-          },
+            category: {
+              include: {
+                designer: {
+                  include: {
+                    partner: true
+                  }
+                }
+              }
+            }
+          }
         },
+        sizes: true,
       },
     });
 
-    if (!design) {
+    if (!item) {
       return res.status(404).json({ message: "Design not found" });
     }
 
     // Increment view count
-    await prisma.design.update({
+    await prisma.designerItem.update({
       where: { id },
       data: { views: { increment: 1 } },
     });
 
     const result = {
-      id: design.id,
-      title: design.title,
-      description: design.description,
-      images: design.images,
-      price: design.price,
-      currency: design.currency,
-      category: design.category,
-      tags: design.tags,
-      designerId: design.designer.partner.id,
-      designerName: design.designer.partner.fullName,
-      designerAvatar: design.designer.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(design.designer.partner.fullName)}&background=random`,
-      isTrending: design.isTrending,
-      isNew: design.isNew,
-      likes: design.likes,
-      views: design.views + 1, // +1 for current view
-      inquiries: design.inquiries,
-      fabricType: design.fabricType,
-      deliveryTime: design.deliveryTime,
+      id: item.id,
+      title: item.name,
+      description: item.description || '',
+      images: item.images,
+      price: item.price,
+      discountPrice: item.discountPrice,
+      currency: item.currency,
+      category: item.subcategory.category.name.toLowerCase(),
+      subcategory: item.subcategory.name,
+      tags: [],
+      designerId: item.subcategory.category.designer.partner.id,
+      designerName: item.subcategory.category.designer.partner.businessName || 
+                     item.subcategory.category.designer.partner.fullName,
+      designerAvatar: item.subcategory.category.designer.avatar || 
+                      `https://ui-avatars.com/api/?name=${encodeURIComponent(item.subcategory.category.designer.partner.fullName)}&background=random`,
+      isTrending: item.views > 100,
+      isNew: (new Date().getTime() - new Date(item.createdAt).getTime()) < 7 * 24 * 60 * 60 * 1000,
+      likes: item.views,
+      views: item.views + 1,
+      inquiries: 0,
+      fabricType: null,
+      deliveryTime: item.deliveryTime || item.customizationTime,
+      sizes: item.sizes.map((s: any) => s.size),
+      availability: item.availability,
+      createdAt: item.createdAt,
     };
 
     return res.json({ design: result });
