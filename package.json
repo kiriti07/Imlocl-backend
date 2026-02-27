@@ -25,12 +25,14 @@
     "express": "^5.2.1",
     "fastify": "^5.7.4",
     "multer": "^2.0.2",
+    "socket.io": "^4.8.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^25.2.3",
+    "@types/socket.io": "^3.0.2",
     "prisma": "^6.15.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"

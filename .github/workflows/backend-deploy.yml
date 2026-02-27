@@ -1,0 +1,47 @@
+name: Build & Deploy Backend to Azure Container Apps
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "Imlocl-backend/**"
+      - ".github/workflows/backend-deploy.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build_push_deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Docker login to ACR
+        uses: azure/docker-login@v2
+        with:
+          login-server: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ secrets.ACR_LOGIN_SERVER }}/imlocl-backend:${{ github.sha }}"
+          docker build -t "$IMAGE" ./Imlocl-backend
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Deploy to Azure Container Apps
+        uses: azure/container-apps-deploy-action@v2
+        with:
+          resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          containerAppName: ${{ secrets.CONTAINER_APP_NAME }}
+          containerAppEnvironment: ${{ secrets.CONTAINERAPPS_ENVIRONMENT }}
+          imageToDeploy: ${{ env.IMAGE }}

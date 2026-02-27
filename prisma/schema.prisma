@@ -27,14 +27,16 @@ model Partner {
   token        String?       @unique
   
   // Relations
-  laundryShop  LaundryShop?
-  meatShop     MeatShop?
-  designerProfile DesignerProfile?
+  laundryShop      LaundryShop?
+  meatShop         MeatShop?
+  designerProfile  DesignerProfile?
+  deliveryPartner  DeliveryPartner? // Add this line
+  cookProfile      CookProfile? // Add this line
   
   @@map("Partner")
 }
 
-// SINGLE DesignerProfile model (remove the duplicate)
+// DesignerProfile model
 model DesignerProfile {
   id           String   @id @default(uuid())
   partnerId    String   @unique
@@ -49,7 +51,7 @@ model DesignerProfile {
   // Relations
   partner      Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
   portfolio    Design[]
-  categories   DesignerCategory[] // Add this line for the relation
+  categories   DesignerCategory[]
   
   @@map("DesignerProfile")
 }
@@ -87,7 +89,6 @@ model Design {
   @@map("Design")
 }
 
-// New models for categories and items
 model DesignerCategory {
   id           String   @id @default(uuid())
   designerId   String
@@ -131,7 +132,7 @@ model DesignerItem {
   currency        String         @default("₹")
   images          String[]
   videos          String[]
-  availability    String // Will store 'READY_MADE' or 'CUSTOMIZATION'
+  availability    String
   measurements    Json?
   deliveryTime    String?
   customizationTime String?
@@ -161,7 +162,6 @@ model Size {
   @@map("Size")
 }
 
-// Keep your existing models below
 model LaundryShop {
   id        String   @id @default(uuid())
   partnerId String   @unique
@@ -206,8 +206,8 @@ model MeatItem {
   minQty      Float?
   stepQty     Float?
   inStock     Boolean  @default(true)
-  imageUrl    String?  // Single image URL (for backward compatibility)
-  images      String[] // Add this for multiple images
+  imageUrl    String?
+  images      String[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   shop        MeatShop @relation(fields: [meatShopId], references: [id], onDelete: Cascade)
@@ -216,6 +216,71 @@ model MeatItem {
   @@map("MeatItem")
 }
 
+// Delivery Partner Models
+model DeliveryPartner {
+  id              String   @id @default(uuid())
+  partnerId       String   @unique
+  drivingLicense  String
+  vehicleNumber   String
+  vehicleType     VehicleType
+  vehicleModel    String?
+  isVerified      Boolean  @default(false)
+  isAvailable     Boolean  @default(true)
+  currentLat      Float?
+  currentLng      Float?
+  lastLocationUpdate DateTime?
+  currentOrders   Int      @default(0)
+  totalDeliveries Int      @default(0)
+  rating          Float    @default(5.0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  partner         Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  deliveries      Delivery[]
+  
+  @@index([isAvailable])
+  @@index([currentOrders])
+  @@map("DeliveryPartner")
+}
+
+model Delivery {
+  id                  String   @id @default(uuid())
+  orderId             String   @unique
+  partnerId           String
+  customerName        String
+  customerPhone       String
+  customerAddress     String?
+  storeId             String
+  storeName           String
+  storeAddress        String?
+  status              DeliveryStatus
+  assignedAt          DateTime? @default(now())
+  pickedUpAt          DateTime?
+  deliveredAt         DateTime?
+  estimatedPickupTime DateTime?
+  estimatedDeliveryTime DateTime?
+  actualPickupTime    DateTime?
+  actualDeliveryTime  DateTime?
+  
+  // Location tracking
+  currentLat          Float?
+  currentLng          Float?
+  lastLocationUpdate  DateTime?
+  
+  // Order details
+  items               Json
+  totalAmount         Float
+  
+  // Relations
+  partner             DeliveryPartner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  
+  @@index([status])
+  @@index([partnerId])
+  @@map("Delivery")
+}
+
+// Enums
 enum PartnerStatus {
   PENDING
   APPROVED
@@ -232,4 +297,175 @@ enum PartnerRole {
   DELIVERY
   
   @@map("PartnerRole")
+}
+
+enum DeliveryStatus {
+  ASSIGNED
+  ON_THE_WAY_TO_STORE
+  ARRIVED_AT_STORE
+  PICKED_UP
+  ON_THE_WAY
+  ARRIVED
+  DELIVERED
+  FAILED
+  CANCELLED
+  
+  @@map("DeliveryStatus")
+}
+
+enum VehicleType {
+  SCOOTY
+  BIKE
+  CAR
+  
+  @@map("VehicleType")
+}
+
+// Add to your existing schema.prisma
+
+model CookProfile {
+  id              String          @id @default(uuid())
+  partnerId       String          @unique
+  bio             String?
+  experience      String?
+  tier            CookTier        @default(HOME_COOK)
+  pricePerHour    Float?
+  pricePerPerson  Float?
+  minPeople       Int?
+  maxPeople       Int?
+  isAvailable     Boolean         @default(true)
+  rating          Float           @default(0)
+  reviewCount     Int             @default(0)
+  avatar          String?
+  coverImage      String?
+  city            String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  
+  // Relations
+  partner         Partner         @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  cuisines        Cuisine[]
+  specialties     CookSpecialty[]
+  menuItems       CookMenuItem[]
+  images          CookImage[]
+  bookings        CookBooking[]
+  
+  @@map("CookProfile")
+}
+
+model Cuisine {
+  id              String          @id @default(uuid())
+  name            String
+  cookProfileId   String
+  
+  // Relations
+  cookProfile     CookProfile     @relation(fields: [cookProfileId], references: [id], onDelete: Cascade)
+  
+  @@unique([cookProfileId, name])
+  @@map("Cuisine")
+}
+
+model CookSpecialty {
+  id              String          @id @default(uuid())
+  name            String
+  cookProfileId   String
+  
+  // Relations
+  cookProfile     CookProfile     @relation(fields: [cookProfileId], references: [id], onDelete: Cascade)
+  
+  @@unique([cookProfileId, name])
+  @@map("CookSpecialty")
+}
+
+model CookImage {
+  id              String          @id @default(uuid())
+  url             String
+  cookProfileId   String
+  isCover         Boolean         @default(false)
+  createdAt       DateTime        @default(now())
+  
+  // Relations
+  cookProfile     CookProfile     @relation(fields: [cookProfileId], references: [id], onDelete: Cascade)
+  
+  @@map("CookImage")
+}
+
+model CookMenuItem {
+  id              String          @id @default(uuid())
+  name            String
+  description     String?
+  price           Float
+  category        MenuCategory
+  cuisine         String?
+  isVegetarian    Boolean         @default(false)
+  isVegan         Boolean         @default(false)
+  isGlutenFree    Boolean         @default(false)
+  isSignature     Boolean         @default(false)
+  imageUrl        String?
+  cookProfileId   String
+  
+  // Relations
+  cookProfile     CookProfile     @relation(fields: [cookProfileId], references: [id], onDelete: Cascade)
+  
+  @@index([cookProfileId])
+  @@map("CookMenuItem")
+}
+
+model CookBooking {
+  id              String          @id @default(uuid())
+  cookProfileId   String
+  customerName    String
+  customerPhone   String
+  customerAddress String?
+  date            DateTime
+  timeSlot        String
+  numberOfPeople  Int
+  specialRequests String?
+  totalPrice      Float
+  status          BookingStatus   @default(PENDING)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  
+  // Relations
+  cookProfile     CookProfile     @relation(fields: [cookProfileId], references: [id], onDelete: Cascade)
+  
+  @@index([cookProfileId])
+  @@index([status])
+  @@map("CookBooking")
+}
+
+enum CookTier {
+  HOME_COOK
+  EXPERIENCED
+  PROFESSIONAL
+  CHEF
+  
+  @@map("CookTier")
+}
+
+enum MenuCategory {
+  STARTER
+  MAIN_COURSE
+  SIDE_DISH
+  DESSERT
+  BEVERAGE
+  BREAD
+  RICE
+  CURRY
+  TANDOOR
+  BBQ
+  BIRYANI
+  THALI
+  
+  @@map("MenuCategory")
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  
+  @@map("BookingStatus")
 }
