@@ -4,6 +4,10 @@
     // File Layout
     // "rootDir": "./src",
     // "outDir": "./dist",
+    "moduleResolution": "NodeNext",
+    "verbatimModuleSyntax": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true
 
     // Environment Settings
     // See also https://aka.ms/tsconfig/module
