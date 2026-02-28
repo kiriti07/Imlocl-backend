@@ -160,6 +160,15 @@ async function ensureMeatShop(partnerId: string) {
 // ----------------------
 // routes
 // ----------------------
+
+app.get("/", (req, res) => {
+  res.status(200).json({ status: "ok", service: "imlocl-backend" });
+});
+
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "healthy" });
+});
+
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 // ✅ PUBLIC: list all approved + open meat shops (for customer app)
