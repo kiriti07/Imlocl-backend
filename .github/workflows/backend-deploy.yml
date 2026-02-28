@@ -51,4 +51,3 @@ jobs:
           containerAppName: ${{ secrets.CONTAINER_APP_NAME }}
           containerAppEnvironment: ${{ secrets.CONTAINERAPPS_ENVIRONMENT }}
           imageToDeploy: ${{ env.IMAGE }}
-
