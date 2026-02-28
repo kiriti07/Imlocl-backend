@@ -31,6 +31,12 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
+      - name: Debug paths
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 3 -type d -name "*backend*" -o -name "*Imlocl*"
+
       - name: Build and push image
         run: |
           IMAGE="${{ secrets.ACR_LOGIN_SERVER }}/imlocl-backend:${{ github.sha }}"
