@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-echo "Running migrations..."
+echo "Running Prisma migrations..."
 npx prisma migrate deploy
 
 echo "Starting app..."
-node dist/index.js
+npm run start:tsx
