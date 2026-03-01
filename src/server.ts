@@ -39,7 +39,7 @@ const app = Fastify({
   logger: true,
 });
 
-// ✅ CORS must be registered BEFORE routes
+// CORS must be registered BEFORE routes
 await app.register(cors, {
   origin: (origin, cb) => {
     // React Native requests often have no Origin header.

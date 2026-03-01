@@ -69,5 +69,4 @@ RUN chmod +x docker-entrypoint.sh
 ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
-
 ENTRYPOINT ["./docker-entrypoint.sh"]
