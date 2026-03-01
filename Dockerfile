@@ -46,21 +46,28 @@
 # RUN chmod +x ./docker-entrypoint.sh
 # CMD ["./docker-entrypoint.sh"]
 
-FROM node:20-alpine AS runner
+FROM node:20-alpine AS builder
 WORKDIR /app
-
-RUN apk add --no-cache libc6-compat
 
 COPY package*.json ./
 RUN npm ci
 
 COPY . .
-
-# Prisma client
+RUN npm run build   # compiles to dist
 RUN npx prisma generate
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/prisma ./prisma
+COPY docker-entrypoint.sh .
+
+RUN chmod +x docker-entrypoint.sh
 
 ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["npm", "run", "start:tsx"]
+ENTRYPOINT ["./docker-entrypoint.sh"]
