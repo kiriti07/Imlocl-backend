@@ -35,35 +35,7 @@ const io = new Server(server, {
 // Track active deliveries
 const activeDeliveries = new Map();
 
-const app = Fastify({
-  logger: true,
-});
 
-// CORS must be registered BEFORE routes
-await app.register(cors, {
-  origin: (origin, cb) => {
-    // React Native requests often have no Origin header.
-    // Allow those + allow your web origins later.
-    if (!origin) return cb(null, true);
-
-    const allowed = [
-      "http://localhost:19006",
-      "http://localhost:3000",
-      "https://rork.com",
-    ];
-
-    if (allowed.includes(origin)) return cb(null, true);
-
-    // For now you can allow all to unblock testing:
-    return cb(null, true);
-
-    // If you want strict mode later:
-    // return cb(new Error("Not allowed by CORS"), false);
-  },
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true,
-});
 // ----------------------
 // ✅ LOCAL IMAGE STORAGE (outside repo) + STATIC SERVE
 // ----------------------
@@ -1091,10 +1063,9 @@ async function main() {
   await prisma.$connect();
   
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`✅ API running on http://localhost:${PORT}`);
-    console.log(`🔌 WebSocket server running on ws://localhost:${PORT}`);
-    console.log(`🖼️ Uploads served at http://localhost:${PORT}/uploads/<file>`);
-    console.log(`📁 Upload folder: ${UPLOAD_DIR}`);
+    console.log(`✅ API running on http://0.0.0.0:${PORT}`);
+    console.log(`🔌 WebSocket server running on ws://0.0.0.0:${PORT}`);
+    console.log(`📁 Using Azure Blob Storage`);
   });
 }
 
