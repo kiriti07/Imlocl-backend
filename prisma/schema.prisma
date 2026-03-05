@@ -32,6 +32,7 @@ model Partner {
   designerProfile  DesignerProfile?
   deliveryPartner  DeliveryPartner? // Add this line
   cookProfile      CookProfile? // Add this line
+  organicShop      OrganicShop?
   
   @@map("Partner")
 }
@@ -216,6 +217,48 @@ model MeatItem {
   @@map("MeatItem")
 }
 
+model OrganicShop {
+  id        String   @id @default(uuid())
+  partnerId String   @unique
+  shopName  String
+  address   String?
+  city      String?
+  lat       Float?
+  lng       Float?
+  isOpen    Boolean  @default(true)
+  openTime  String?
+  closeTime String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  partner   Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  items     OrganicItem[]
+
+  @@map("OrganicShop")
+}
+
+model OrganicItem {
+  id           String     @id @default(uuid())
+  organicShopId String
+  name         String
+  unit         String     // "kg", "g", "pack", "bottle"
+  price        Float
+  minQty       Float?
+  stepQty      Float?
+  inStock      Boolean    @default(true)
+  imageUrl     String?
+  images       String[]
+  category     String?    // "Oils", "Spices", "Pulses"
+  isOrganic    Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  shop         OrganicShop @relation(fields: [organicShopId], references: [id], onDelete: Cascade)
+
+  @@index([organicShopId])
+  @@map("OrganicItem")
+}
+
 // Delivery Partner Models
 model DeliveryPartner {
   id              String   @id @default(uuid())
@@ -292,6 +335,7 @@ enum PartnerStatus {
 enum PartnerRole {
   LAUNDRY_PARTNER
   MEAT_PARTNER
+  ORGANIC_PARTNER
   TAILOR
   COOK
   DELIVERY

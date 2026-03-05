@@ -101,11 +101,16 @@ function roleFromPartnerType(partnerType: string): PartnerRole {
 
   if (["laundry", "laundry_partner", "laundry_shop"].includes(pt)) return PartnerRole.LAUNDRY_PARTNER;
   if (["meat_store", "meat", "meatshop", "meat_shop", "butcher"].includes(pt)) return PartnerRole.MEAT_PARTNER;
+
+  // ✅ add organic store mapping
+  if (["organic", "organic_store", "organic-shop", "organicshop", "kirana", "grocery_organic"].includes(pt)) {
+    return PartnerRole.ORGANIC_PARTNER;
+  }
+
   if (["tailor", "stitching", "designer"].includes(pt)) return PartnerRole.TAILOR;
   if (["cook", "cooking", "chef"].includes(pt)) return PartnerRole.COOK;
   if (["delivery", "delivery_partner", "driver"].includes(pt)) return PartnerRole.DELIVERY;
 
-  // safe fallback
   return PartnerRole.TAILOR;
 }
 
@@ -146,6 +151,43 @@ async function ensureMeatShop(partnerId: string) {
   const shopName = partner?.businessName || partner?.fullName || "Meat Shop";
 
   return prisma.meatShop.upsert({
+    where: { partnerId },
+    update: {},
+    create: {
+      partnerId,
+      shopName,
+      address: partner?.address ?? null,
+      city: partner?.city ?? null,
+      isOpen: true,
+    },
+    include: { items: true },
+  });
+}
+
+// ----------------------
+// ORGANIC helpers
+// ----------------------
+async function requireOrganicPartnerApproved(req: express.Request) {
+  const auth = await authRequired(req);
+  if (!auth.ok) return auth;
+
+  const partner = auth.partner;
+
+  if (partner.role !== PartnerRole.ORGANIC_PARTNER) {
+    return { ok: false as const, status: 403, message: "Only Organic Partner can access this." };
+  }
+  if (partner.status !== PartnerStatus.APPROVED) {
+    return { ok: false as const, status: 403, message: "Account under review. Not approved yet." };
+  }
+
+  return { ok: true as const, partner };
+}
+
+async function ensureOrganicShop(partnerId: string) {
+  const partner = await prisma.partner.findUnique({ where: { id: partnerId } });
+  const shopName = partner?.businessName || partner?.fullName || "Organic Store";
+
+  return prisma.organicShop.upsert({
     where: { partnerId },
     update: {},
     create: {
@@ -324,6 +366,124 @@ app.get("/api/public/meatshops/:id", async (req, res) => {
     return res.json({ shop: result });
   } catch (e: any) {
     console.error("PUBLIC MEATSHOP BY ID ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ PUBLIC: list all approved + open organic stores (for customer app)
+app.get("/api/public/organicstores", async (_req, res) => {
+  try {
+    const shops = await prisma.organicShop.findMany({
+      where: {
+        isOpen: true,
+        partner: {
+          role: PartnerRole.ORGANIC_PARTNER,
+          status: PartnerStatus.APPROVED,
+          isActive: true,
+        },
+      },
+      include: {
+        items: {
+          where: { inStock: true },
+          orderBy: { createdAt: "desc" },
+        },
+        partner: true,
+      },
+      orderBy: { updatedAt: "desc" },
+    });
+
+    const result = shops.map((s: any) => ({
+      id: s.id,
+      shopName: s.shopName,
+      address: s.address,
+      city: s.city,
+      lat: s.lat,
+      lng: s.lng,
+      isOpen: s.isOpen,
+      openTime: s.openTime,
+      closeTime: s.closeTime,
+      partner: {
+        id: s.partner?.id,
+        fullName: s.partner?.fullName,
+        phone: s.partner?.phone,
+        businessName: s.partner?.businessName,
+      },
+      items: (s.items ?? []).map((it: any) => ({
+        id: it.id,
+        name: it.name,
+        unit: it.unit,
+        price: it.price,
+        minQty: it.minQty,
+        stepQty: it.stepQty,
+        inStock: it.inStock,
+        imageUrl: it.imageUrl ?? null,
+        category: it.category ?? null,
+        isOrganic: it.isOrganic ?? true,
+      })),
+    }));
+
+    return res.json({ shops: result });
+  } catch (e: any) {
+    console.error("PUBLIC ORGANIC STORES ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ PUBLIC: get one organic store by id (for /organic-store/[id] page)
+app.get("/api/public/organicstores/:id", async (req, res) => {
+  try {
+    const id = s(req.params.id);
+    if (!id) return res.status(400).json({ message: "id is required" });
+
+    const shop = await prisma.organicShop.findFirst({
+      where: {
+        id,
+        partner: {
+          role: PartnerRole.ORGANIC_PARTNER,
+          status: PartnerStatus.APPROVED,
+          isActive: true,
+        },
+      },
+      include: {
+        items: { orderBy: { createdAt: "desc" } },
+        partner: true,
+      },
+    });
+
+    if (!shop) return res.status(404).json({ message: "Organic store not found" });
+
+    return res.json({
+      shop: {
+        id: shop.id,
+        shopName: shop.shopName,
+        address: shop.address,
+        city: shop.city,
+        lat: shop.lat,
+        lng: shop.lng,
+        isOpen: shop.isOpen,
+        openTime: (shop as any).openTime ?? null,
+        closeTime: (shop as any).closeTime ?? null,
+        partner: {
+          id: (shop as any).partner?.id,
+          fullName: (shop as any).partner?.fullName,
+          businessName: (shop as any).partner?.businessName,
+        },
+        items: (shop as any).items?.map((it: any) => ({
+          id: it.id,
+          name: it.name,
+          unit: it.unit,
+          price: it.price,
+          minQty: it.minQty,
+          stepQty: it.stepQty,
+          inStock: it.inStock,
+          imageUrl: it.imageUrl ?? null,
+          category: it.category ?? null,
+          isOrganic: it.isOrganic ?? true,
+        })),
+      },
+    });
+  } catch (e: any) {
+    console.error("PUBLIC ORGANIC STORE BY ID ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
@@ -648,6 +808,89 @@ app.delete("/api/meatshop/items/:id", async (req, res) => {
   }
 });
 
+// ----------------------
+// ORGANIC SHOP APIs (ORGANIC_PARTNER + APPROVED only)
+// ----------------------
+
+// ✅ Get my organic shop + items
+app.get("/api/organicshop/me", async (req, res) => {
+  try {
+    const gate = await requireOrganicPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await ensureOrganicShop(gate.partner.id);
+    return res.json({ shop });
+  } catch (e: any) {
+    console.error("ORGANICSHOP/ME ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Toggle store open/close
+app.post("/api/organicshop/toggle", async (req, res) => {
+  try {
+    const gate = await requireOrganicPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const isOpen = Boolean(req.body.isOpen);
+
+    const shop = await prisma.organicShop.upsert({
+      where: { partnerId: gate.partner.id },
+      update: { isOpen },
+      create: {
+        partnerId: gate.partner.id,
+        shopName: gate.partner.businessName || gate.partner.fullName || "Organic Store",
+        isOpen,
+      },
+    });
+
+    return res.json({ shop });
+  } catch (e: any) {
+    console.error("ORGANICSHOP/TOGGLE ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Add organic item (basic JSON version)
+app.post("/api/organicshop/items", async (req, res) => {
+  try {
+    const gate = await requireOrganicPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await ensureOrganicShop(gate.partner.id);
+
+    const name = s(req.body.name);
+    const unit = s(req.body.unit);
+    const price = asFloat(req.body.price);
+    const minQty = asFloat(req.body.minQty);
+    const stepQty = asFloat(req.body.stepQty);
+    const category = req.body.category ? s(req.body.category) : null;
+
+    if (!name || !unit || price === null) {
+      return res.status(400).json({ message: "name, unit, price are required" });
+    }
+
+    const item = await prisma.organicItem.create({
+      data: {
+        organicShopId: shop.id,
+        name,
+        unit,
+        price,
+        minQty,
+        stepQty,
+        inStock: true,
+        imageUrl: null,
+        category,
+        isOrganic: true,
+      },
+    });
+
+    return res.json({ item });
+  } catch (e: any) {
+    console.error("ORGANICSHOP/ITEMS CREATE ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
 
 // ============================================
 // DELIVERY MANAGEMENT ENDPOINTS
