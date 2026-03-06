@@ -6,6 +6,7 @@ const PartnerType = z.enum([
   "designer",
   "tailor",
   "meat_store",
+  "organic_store",  // ✅ ADD THIS
   "cook",
   "delivery_partner",
 ]);
@@ -14,10 +15,11 @@ function mapTypeToRole(type: z.infer<typeof PartnerType>) {
   switch (type) {
     case "laundry_store": return "LAUNDRY_PARTNER";
     case "meat_store": return "MEAT_PARTNER";
+    case "organic_store": return "ORGANIC_PARTNER";  // ✅ ADD THIS
     case "tailor": return "TAILOR";
     case "cook": return "COOK";
     case "delivery_partner": return "DELIVERY";
-    case "designer": return "TAILOR"; // treat designer as tailor for now (or add DESIGNER role later)
+    case "designer": return "TAILOR"; // treat designer as tailor for now
   }
 }
 

@@ -101,17 +101,15 @@ function roleFromPartnerType(partnerType: string): PartnerRole {
 
   if (["laundry", "laundry_partner", "laundry_shop"].includes(pt)) return PartnerRole.LAUNDRY_PARTNER;
   if (["meat_store", "meat", "meatshop", "meat_shop", "butcher"].includes(pt)) return PartnerRole.MEAT_PARTNER;
-
-  // ✅ add organic store mapping
   if (["organic", "organic_store", "organic-shop", "organicshop", "kirana", "grocery_organic"].includes(pt)) {
     return PartnerRole.ORGANIC_PARTNER;
   }
-
   if (["tailor", "stitching", "designer"].includes(pt)) return PartnerRole.TAILOR;
   if (["cook", "cooking", "chef"].includes(pt)) return PartnerRole.COOK;
   if (["delivery", "delivery_partner", "driver"].includes(pt)) return PartnerRole.DELIVERY;
 
-  return PartnerRole.TAILOR;
+  // ❌ Don't default to TAILOR - throw an error
+  throw new Error(`Invalid partner type: ${partnerType}`);
 }
 
 function parseBearerToken(req: express.Request) {
