@@ -489,6 +489,58 @@ app.get("/api/public/organicstores/:id", async (req, res) => {
   }
 });
 
+// ✅ Get my organic categories
+app.get("/api/organicshop/categories", async (req, res) => {
+  try {
+    const gate = await requireOrganicPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await ensureOrganicShop(gate.partner.id);
+
+    const categories = await prisma.organicCategory.findMany({
+      where: { organicShopId: shop.id },
+      include: {
+        items: {
+          orderBy: { createdAt: "desc" },
+        },
+      },
+      orderBy: { name: "asc" },
+    });
+
+    return res.json({ categories });
+  } catch (e: any) {
+    console.error("ORGANIC CATEGORIES ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Create category
+app.post("/api/organicshop/categories", async (req, res) => {
+  try {
+    const gate = await requireOrganicPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await ensureOrganicShop(gate.partner.id);
+    const name = s(req.body.name);
+
+    if (!name) {
+      return res.status(400).json({ message: "Category name is required" });
+    }
+
+    const category = await prisma.organicCategory.create({
+      data: {
+        organicShopId: shop.id,
+        name,
+      },
+    });
+
+    return res.json({ category });
+  } catch (e: any) {
+    console.error("CREATE ORGANIC CATEGORY ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
 // ✅ REGISTER
 app.post("/api/partners/register", async (req, res) => {
   try {
@@ -832,8 +884,50 @@ app.get("/api/organicshop/me", async (req, res) => {
     const gate = await requireOrganicPartnerApproved(req);
     if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
 
-    const shop = await ensureOrganicShop(gate.partner.id);
-    return res.json({ shop });
+    const shop = await prisma.organicShop.findUnique({
+      where: { partnerId: gate.partner.id },
+      include: {
+        items: { orderBy: { createdAt: "desc" } },
+        categories: {
+          include: {
+            items: { orderBy: { createdAt: "desc" } },
+          },
+          orderBy: { name: "asc" },
+        },
+      },
+    });
+
+    if (!shop) {
+      return res.json({
+        shop: null,
+        categories: [],
+        items: [],
+        stats: {
+          totalItems: 0,
+          todaysOrders: 0,
+          pendingOrders: 0,
+          earningsToday: 0,
+        },
+      });
+    }
+
+    return res.json({
+      shop: {
+        id: shop.id,
+        shopName: shop.shopName,
+        city: shop.city,
+        address: shop.address,
+        isOpen: shop.isOpen,
+      },
+      categories: shop.categories,
+      items: shop.items,
+      stats: {
+        totalItems: shop.items.length,
+        todaysOrders: 0,
+        pendingOrders: 0,
+        earningsToday: 0,
+      },
+    });
   } catch (e: any) {
     console.error("ORGANICSHOP/ME ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
@@ -879,6 +973,10 @@ app.post("/api/organicshop/items", async (req, res) => {
     const minQty = asFloat(req.body.minQty);
     const stepQty = asFloat(req.body.stepQty);
     const category = req.body.category ? s(req.body.category) : null;
+    const description = req.body.description ? s(req.body.description) : null;
+    const stock = req.body.stock !== undefined ? Number(req.body.stock) : null;
+    const isAvailable = req.body.isAvailable !== undefined ? Boolean(req.body.isAvailable) : true;
+    const organicCategoryId = req.body.organicCategoryId ? s(req.body.organicCategoryId) : null;
 
     if (!name || !unit || price === null) {
       return res.status(400).json({ message: "name, unit, price are required" });
@@ -887,14 +985,17 @@ app.post("/api/organicshop/items", async (req, res) => {
     const item = await prisma.organicItem.create({
       data: {
         organicShopId: shop.id,
+        organicCategoryId,
         name,
         unit,
         price,
         minQty,
         stepQty,
-        inStock: true,
+        inStock: isAvailable,
         imageUrl: null,
         category,
+        description,
+        stock,
         isOrganic: true,
       },
     });
@@ -902,6 +1003,44 @@ app.post("/api/organicshop/items", async (req, res) => {
     return res.json({ item });
   } catch (e: any) {
     console.error("ORGANICSHOP/ITEMS CREATE ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+app.post("/api/organicshop/items/:id/image", upload.single("image"), async (req, res) => {
+  try {
+    const gate = await requireOrganicPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await ensureOrganicShop(gate.partner.id);
+    const id = s(req.params.id);
+
+    const existing = await prisma.organicItem.findFirst({
+      where: { id, organicShopId: shop.id },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: "Item not found" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: "Missing file field 'image'" });
+    }
+
+    const fileName = `organic-${Date.now()}-${req.file.originalname.replace(/\s+/g, "-")}`;
+    const filePath = path.join(UPLOAD_DIR, fileName);
+    fs.writeFileSync(filePath, req.file.buffer);
+
+    const imageUrl = `${req.protocol}://${req.get("host")}/uploads/${fileName}`;
+
+    const updated = await prisma.organicItem.update({
+      where: { id },
+      data: { imageUrl },
+    });
+
+    return res.json({ item: updated, imageUrl });
+  } catch (e: any) {
+    console.error("ORGANICSHOP/ITEM IMAGE UPLOAD ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });

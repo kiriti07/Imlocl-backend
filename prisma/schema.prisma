@@ -232,30 +232,50 @@ model OrganicShop {
   updatedAt DateTime @updatedAt
 
   partner   Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  categories OrganicCategory[]
   items     OrganicItem[]
 
   @@map("OrganicShop")
 }
 
-model OrganicItem {
-  id           String     @id @default(uuid())
+model OrganicCategory {
+  id            String        @id @default(cuid())
   organicShopId String
-  name         String
-  unit         String     // "kg", "g", "pack", "bottle"
-  price        Float
-  minQty       Float?
-  stepQty      Float?
-  inStock      Boolean    @default(true)
-  imageUrl     String?
-  images       String[]
-  category     String?    // "Oils", "Spices", "Pulses"
-  isOrganic    Boolean    @default(true)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  name          String
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
-  shop         OrganicShop @relation(fields: [organicShopId], references: [id], onDelete: Cascade)
+  organicShop   OrganicShop   @relation(fields: [organicShopId], references: [id], onDelete: Cascade)
+  items         OrganicItem[]
+
+  @@unique([organicShopId, name])
+  @@map("OrganicCategory")
+}
+
+model OrganicItem {
+  id                String           @id @default(uuid())
+  organicShopId     String
+  organicCategoryId String?
+  name              String
+  unit              String
+  price             Float
+  minQty            Float?
+  stepQty           Float?
+  inStock           Boolean          @default(true)
+  imageUrl          String?
+  images            String[]
+  category          String?
+  description       String?
+  stock             Int?
+  isOrganic         Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  shop              OrganicShop      @relation(fields: [organicShopId], references: [id], onDelete: Cascade)
+  organicCategory   OrganicCategory? @relation(fields: [organicCategoryId], references: [id], onDelete: SetNull)
 
   @@index([organicShopId])
+  @@index([organicCategoryId])
   @@map("OrganicItem")
 }
 
