@@ -7,6 +7,7 @@ on:
       - "src/**"
       - "prisma/**"
       - "Dockerfile"
+      - "docker-entrypoint.sh"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/backend-deploy.yml"
@@ -35,12 +36,6 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Debug paths
-        run: |
-          pwd
-          ls -la
-          find . -maxdepth 3 -type d
-
       - name: Build and push image
         run: |
           IMAGE="${{ secrets.ACR_LOGIN_SERVER }}/imlocl-backend:${{ github.sha }}"
@@ -48,17 +43,32 @@ jobs:
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
-      - name: Deploy to Azure Container Apps
-        uses: azure/container-apps-deploy-action@v2
-        with:
-          resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
-          containerAppName: ${{ secrets.CONTAINER_APP_NAME }}
-          containerAppEnvironment: ${{ secrets.CONTAINERAPPS_ENVIRONMENT }}
-          imageToDeploy: ${{ env.IMAGE }}
-          environmentVariables: |
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
-            AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=imlocldev;AccountKey=${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }};EndpointSuffix=core.windows.net
-            AZURE_STORAGE_CONTAINER_NAME=images
-            AZURE_STORAGE_ACCOUNT_NAME=imlocldev
-            NODE_ENV=production
-            PORT=8080
+      - name: Set Container App secrets
+        run: |
+          az containerapp secret set \
+            --name ${{ secrets.CONTAINER_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --secrets \
+              database-url='${{ secrets.DATABASE_URL }}' \
+              azure-storage-connstr='DefaultEndpointsProtocol=https;AccountName=imlocldev;AccountKey=${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }};EndpointSuffix=core.windows.net'
+
+      - name: Deploy to Azure Container App
+        run: |
+          az containerapp update \
+            --name ${{ secrets.CONTAINER_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.IMAGE }} \
+            --set-env-vars \
+              DATABASE_URL=secretref:database-url \
+              AZURE_STORAGE_CONNECTION_STRING=secretref:azure-storage-connstr \
+              AZURE_STORAGE_CONTAINER_NAME=images \
+              AZURE_STORAGE_ACCOUNT_NAME=imlocldev \
+              NODE_ENV=production \
+              PORT=8080
+
+      - name: Show revision status
+        run: |
+          az containerapp revision list \
+            --name ${{ secrets.CONTAINER_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            -o table
