@@ -38,8 +38,8 @@ jobs:
       - name: Debug paths
         run: |
           pwd
-          # ls -la
-          find . -maxdepth 3 -type d -name "*backend*" -o -name "*Imlocl*"
+          ls -la
+          find . -maxdepth 3 -type d
 
       - name: Build and push image
         run: |
