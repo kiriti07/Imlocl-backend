@@ -4,5 +4,8 @@ set -e
 echo "Running Prisma migrations..."
 npx prisma migrate deploy
 
+echo "Building TypeScript..."
+npm run build
+
 echo "Starting app..."
-npm run start:tsx
+node dist/server.js

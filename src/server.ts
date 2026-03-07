@@ -14,8 +14,6 @@ import http from 'http';
 import { setupWebSocket } from './websocket';
 import path from "path";
 import fs from "fs";
-import Fastify from "fastify";
-import cors from "@fastify/cors";
 
 const app = express();
 const prisma = new PrismaClient();
@@ -202,6 +200,12 @@ async function ensureOrganicShop(partnerId: string) {
 // ----------------------
 // routes
 // ----------------------
+app.get("/api/debug/register-source", (_req, res) => {
+  return res.json({
+    source: "src/server.ts",
+    marker: "organic-fix-build",
+  });
+});
 
 app.get("/", (req, res) => {
   res.status(200).json({ status: "ok", service: "imlocl-backend" });
