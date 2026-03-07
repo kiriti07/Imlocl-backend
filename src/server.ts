@@ -525,7 +525,20 @@ app.post("/api/partners/register", async (req, res) => {
       },
     });
 
-    return res.json({ partner: created });
+    const fetched = await prisma.partner.findUnique({
+      where: { id: created.id },
+    });
+
+    return res.json({
+      debug: {
+        receivedPartnerType: partnerType,
+        mappedRoleBeforeInsert: role,
+        createdRoleFromCreateResponse: created.role,
+        fetchedRoleFromDb: fetched?.role ?? null,
+        source: "src/server.ts",
+      },
+      partner: created,
+    });
   } catch (e: any) {
     console.error("REGISTER ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
