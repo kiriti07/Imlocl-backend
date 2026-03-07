@@ -85,6 +85,32 @@ io.on('connection', (socket) => {
   });
 });
 
+function calculatePickupTime() {
+  const dt = new Date();
+  dt.setMinutes(dt.getMinutes() + 15);
+  return dt;
+}
+
+function calculateDeliveryTime() {
+  const dt = new Date();
+  dt.setMinutes(dt.getMinutes() + 45);
+  return dt;
+}
+
+async function findOptimalPartner(partners: any[], _orderId: string) {
+  if (!partners.length) {
+    throw new Error("No delivery partners available");
+  }
+  return partners[0];
+}
+
+async function notifyPartner(_partnerId: string, _delivery: any) {
+  console.log("notifyPartner placeholder called");
+}
+
+function getDeliveryStatus(_deliveryId: string) {
+  return null;
+}
 // ----------------------
 // helpers
 // ----------------------
@@ -282,43 +308,10 @@ app.get("/api/public/meatshops", async (_req, res) => {
 });
 
 // ✅ Assign delivery partner to order (after store accepts)
-app.post("/api/orders/:orderId/assign-delivery", async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    
-    // Find nearest available delivery partner
-    const availablePartners = await prisma.deliveryPartner.findMany({
-      where: {
-        isActive: true,
-        isAvailable: true,
-        currentOrders: { lt: 3 }, // Max 3 concurrent orders
-      },
-    });
-
-    // Calculate ETA and find best match
-    // Consider: distance, current load, historical performance
-    
-    const assignedPartner = await findOptimalPartner(availablePartners, orderId);
-    
-    // Create delivery record
-    const delivery = await prisma.delivery.create({
-      data: {
-        orderId,
-        partnerId: assignedPartner.id,
-        status: 'ASSIGNED',
-        estimatedPickupTime: calculatePickupTime(),
-        estimatedDeliveryTime: calculateDeliveryTime(),
-      },
-    });
-
-    // Notify partner via push notification
-    await notifyPartner(assignedPartner.id, delivery);
-    
-    return res.json({ delivery });
-  } catch (e: any) {
-    console.error("ASSIGN DELIVERY ERROR:", e);
-    return res.status(500).json({ message: e?.message ?? "Server error" });
-  }
+app.post("/api/orders/:orderId/assign-delivery", async (_req, res) => {
+  return res.status(501).json({
+    message: "assign-delivery route is not implemented yet. Use /api/deliveries instead."
+  });
 });
 
 // ✅ PUBLIC: get one meat shop by id (for /meat-store/[id] page)
@@ -940,8 +933,15 @@ app.post("/api/deliveries", async (req, res) => {
     const availablePartner = await prisma.deliveryPartner.findFirst({
       where: {
         isAvailable: true,
-        isActive: true,
-        currentOrders: { lt: 3 }, // Max 3 concurrent deliveries
+        currentOrders: { lt: 3 },
+        partner: {
+          isActive: true,
+          status: PartnerStatus.APPROVED,
+          role: PartnerRole.DELIVERY,
+        },
+      },
+      include: {
+        partner: true,
       },
     });
 
@@ -963,19 +963,23 @@ app.post("/api/deliveries", async (req, res) => {
         partnerId: availablePartner.id,
         customerName,
         customerPhone,
-        customerAddress,
+        customerAddress: customerAddress || null,
         storeId: shop.id,
         storeName: shop.shopName,
-        storeAddress: shop.address,
-        status: 'ASSIGNED',
+        storeAddress: shop.address || null,
+        status: "ASSIGNED",
         assignedAt: new Date(),
-        estimatedPickupTime: new Date(estimatedPickupTime),
-        estimatedDeliveryTime: estimatedDeliveryTime,
-        items: JSON.stringify(items),
-        totalAmount,
+        estimatedPickupTime: calculatePickupTime(),
+        estimatedDeliveryTime: calculateDeliveryTime(),
+        items,
+        totalAmount: Number(totalAmount),
       },
       include: {
-        partner: true,
+        partner: {
+          include: {
+            partner: true,
+          },
+        },
       },
     });
 
@@ -986,12 +990,12 @@ app.post("/api/deliveries", async (req, res) => {
     });
 
     // Notify via WebSocket
-    io.emit('delivery-created', {
+    io.emit("delivery-created", {
       deliveryId: delivery.id,
       status: delivery.status,
       partner: {
-        name: delivery.partner.fullName,
-        phone: delivery.partner.phone,
+        name: delivery.partner.partner.fullName,
+        phone: delivery.partner.partner.phone,
       },
     });
 
@@ -1081,12 +1085,8 @@ app.get("/api/deliveries/:id", async (req, res) => {
       where: { id },
       include: {
         partner: {
-          select: {
-            fullName: true,
-            phone: true,
-            vehicleType: true,
-            vehicleNumber: true,
-            rating: true,
+          include: {
+            partner: true,
           },
         },
       },
@@ -1138,37 +1138,61 @@ app.post("/api/delivery-partners/register", async (req, res) => {
       fullName,
       phone,
       email,
-      vehicleType,
+      address,
+      city,
+      drivingLicense,
       vehicleNumber,
+      vehicleType,
+      vehicleModel,
     } = req.body;
 
-    // Check if partner already exists
-    const existing = await prisma.deliveryPartner.findFirst({
-      where: {
-        OR: [
-          { phone },
-          { email },
-        ],
-      },
-    });
-
-    if (existing) {
-      return res.status(409).json({ message: "Partner already registered" });
+    if (!fullName || !phone || !drivingLicense || !vehicleNumber || !vehicleType) {
+      return res.status(400).json({ message: "Missing required fields" });
     }
 
-    const partner = await prisma.deliveryPartner.create({
+    const existingPartner = await prisma.partner.findFirst({
+      where: { phone: s(phone) },
+      include: { deliveryPartner: true },
+    });
+
+    if (existingPartner?.deliveryPartner) {
+      return res.status(409).json({ message: "Delivery partner already registered" });
+    }
+
+    let partnerId = existingPartner?.id;
+
+    if (!partnerId) {
+      const createdPartner = await prisma.partner.create({
+        data: {
+          fullName: s(fullName),
+          phone: s(phone),
+          email: email ? s(email) : null,
+          address: address ? s(address) : null,
+          city: city ? s(city) : null,
+          partnerType: "delivery_partner",
+          role: PartnerRole.DELIVERY,
+          status: PartnerStatus.PENDING,
+          isActive: true,
+        },
+      });
+      partnerId = createdPartner.id;
+    }
+
+    const deliveryPartner = await prisma.deliveryPartner.create({
       data: {
-        fullName,
-        phone,
-        email,
+        partnerId,
+        drivingLicense: s(drivingLicense),
+        vehicleNumber: s(vehicleNumber),
         vehicleType,
-        vehicleNumber,
-        isActive: true,
+        vehicleModel: vehicleModel ? s(vehicleModel) : null,
         isAvailable: true,
+      },
+      include: {
+        partner: true,
       },
     });
 
-    return res.json({ partner });
+    return res.json({ deliveryPartner });
   } catch (e: any) {
     console.error("REGISTER DELIVERY PARTNER ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
@@ -1469,7 +1493,7 @@ app.get("/api/public/designers/:id", async (req, res) => {
       location: designer.city || "Location not specified",
       rating: 4.8,
       reviewCount: 0,
-      designCount: designer.designerProfile?.portfolio?.length || 0,
+      designCount: 0,
       experience: designer.experience || "Experienced",
       verified: true,
       tags: designer.designerProfile?.specialties || ["Fashion"],

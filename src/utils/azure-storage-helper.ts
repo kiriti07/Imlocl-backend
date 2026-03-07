@@ -1,7 +1,13 @@
 // src/utils/azure-storage-helper.ts
 import { containerClient } from "../config/azure-storage";
-import { generateBlobSASQueryParameters, StorageSharedKeyCredential, SASProtocol } from "@azure/storage-blob";
+import {
+  generateBlobSASQueryParameters,
+  StorageSharedKeyCredential,
+  SASProtocol,
+  BlobSASPermissions,
+} from "@azure/storage-blob";
 import crypto from "crypto";
+import type { Express } from "express";
 
 export interface UploadResult {
   blobName: string;
@@ -20,15 +26,14 @@ function generateSasToken(blobName: string): string {
 
   const sasOptions = {
     containerName: containerClient.containerName,
-    blobName: blobName,
+    blobName,
     startsOn: startDate,
     expiresOn: expiryDate,
-    permissions: "r",
+    permissions: BlobSASPermissions.parse("r"),
     protocol: SASProtocol.Https,
   };
 
-  const sasToken = generateBlobSASQueryParameters(sasOptions, sharedKeyCredential).toString();
-  return sasToken;
+  return generateBlobSASQueryParameters(sasOptions, sharedKeyCredential).toString();
 }
 
 export function generateBlobName(
@@ -38,16 +43,16 @@ export function generateBlobName(
   itemName: string,
   originalFilename: string
 ): string {
-  const sanitize = (str: string) => str.replace(/[^a-zA-Z0-9]/g, '_');
-  
+  const sanitize = (str: string) => str.replace(/[^a-zA-Z0-9]/g, "_");
+
   const safeBusiness = sanitize(businessName);
   const safeCategory = sanitize(categoryName);
   const safeSubcategory = sanitize(subcategoryName);
   const safeItem = sanitize(itemName);
-  
-  const ext = originalFilename.split('.').pop() || 'jpg';
+
+  const ext = originalFilename.split(".").pop() || "jpg";
   const uniqueFilename = `${crypto.randomUUID()}.${ext}`;
-  
+
   return `${safeBusiness}/${safeCategory}/${safeSubcategory}/${safeItem}/${uniqueFilename}`;
 }
 
@@ -66,22 +71,32 @@ export async function uploadToAzure(
     itemName,
     originalFilename
   );
-  
+
   const blockBlobClient = containerClient.getBlockBlobClient(blobName);
-  
+
+  const ext = originalFilename.split(".").pop()?.toLowerCase() || "jpg";
+  const contentType =
+    ext === "png"
+      ? "image/png"
+      : ext === "webp"
+      ? "image/webp"
+      : ext === "gif"
+      ? "image/gif"
+      : "image/jpeg";
+
   await blockBlobClient.uploadData(fileBuffer, {
     blobHTTPHeaders: {
-      blobContentType: `image/${originalFilename.split('.').pop()}`,
+      blobContentType: contentType,
     },
   });
-  
+
   const sasToken = generateSasToken(blobName);
   const sasUrl = `${blockBlobClient.url}?${sasToken}`;
-  
-  return { 
-    blobName, 
+
+  return {
+    blobName,
     url: blockBlobClient.url,
-    sasUrl
+    sasUrl,
   };
 }
 
@@ -92,7 +107,7 @@ export async function uploadMultipleToAzure(
   subcategoryName: string,
   itemName: string
 ): Promise<UploadResult[]> {
-  const uploadPromises = files.map(file => 
+  const uploadPromises = files.map((file) =>
     uploadToAzure(
       file.buffer,
       businessName,
@@ -102,6 +117,6 @@ export async function uploadMultipleToAzure(
       file.originalname
     )
   );
-  
+
   return Promise.all(uploadPromises);
 }
