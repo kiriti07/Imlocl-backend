@@ -33,7 +33,13 @@ const io = new Server(server, {
 // Track active deliveries
 const activeDeliveries = new Map();
 
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+});
 
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION:", reason);
+});
 // ----------------------
 // ✅ LOCAL IMAGE STORAGE (outside repo) + STATIC SERVE
 // ----------------------
@@ -1319,12 +1325,15 @@ app.delete("/api/meatshop/items/:id/image", async (req, res) => {
 // ----------------------
 async function main() {
   await prisma.$connect();
-  
+
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`✅ API running on http://0.0.0.0:${PORT}`);
     console.log(`🔌 WebSocket server running on ws://0.0.0.0:${PORT}`);
-    console.log(`📁 Using Azure Blob Storage`);
   });
+
+  ensureContainerExists()
+    .then(() => console.log("✅ Azure storage container ready"))
+    .catch((err) => console.error("⚠️ Azure storage init failed:", err));
 }
 
 main().catch((err) => {
