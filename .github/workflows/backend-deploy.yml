@@ -4,7 +4,11 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - "Imlocl-backend/**"
+      - "src/**"
+      - "prisma/**"
+      - "Dockerfile"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/backend-deploy.yml"
 
 permissions:
