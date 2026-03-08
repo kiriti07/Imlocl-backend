@@ -1045,6 +1045,96 @@ app.post("/api/organicshop/items/:id/image", upload.single("image"), async (req,
   }
 });
 
+app.put("/api/organicshop/items/:id", async (req, res) => {
+  try {
+    const gate = await requireOrganicPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await ensureOrganicShop(gate.partner.id);
+    const id = s(req.params.id);
+
+    const existing = await prisma.organicItem.findFirst({
+      where: { id, organicShopId: shop.id },
+    });
+
+    if (!existing) return res.status(404).json({ message: "Item not found" });
+
+    const data: any = {};
+
+    if (req.body.name !== undefined) data.name = s(req.body.name);
+    if (req.body.unit !== undefined) data.unit = s(req.body.unit);
+    if (req.body.price !== undefined) data.price = Number(req.body.price);
+    if (req.body.minQty !== undefined) data.minQty = asFloat(req.body.minQty);
+    if (req.body.stepQty !== undefined) data.stepQty = asFloat(req.body.stepQty);
+    if (req.body.inStock !== undefined) data.inStock = Boolean(req.body.inStock);
+
+    const item = await prisma.organicItem.update({
+      where: { id },
+      data,
+    });
+
+    return res.json({ item });
+
+  } catch (e:any) {
+    console.error("ORGANIC ITEM UPDATE ERROR:", e);
+    return res.status(500).json({ message: e.message });
+  }
+});
+
+app.delete("/api/organicshop/items/:id", async (req, res) => {
+  try {
+    const gate = await requireOrganicPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await ensureOrganicShop(gate.partner.id);
+    const id = s(req.params.id);
+
+    const existing = await prisma.organicItem.findFirst({
+      where: { id, organicShopId: shop.id },
+    });
+
+    if (!existing) return res.status(404).json({ message: "Item not found" });
+
+    await prisma.organicItem.update({
+      where: { id },
+      data: { inStock: false },
+    });
+
+    return res.json({ ok: true });
+
+  } catch (e:any) {
+    console.error("ORGANIC ITEM DELETE ERROR:", e);
+    return res.status(500).json({ message: e.message });
+  }
+});
+
+app.put("/api/organicshop/categories/:id", async (req,res)=>{
+  const gate = await requireOrganicPartnerApproved(req);
+  if(!gate.ok) return res.status(gate.status).json({message:gate.message});
+
+  const id = req.params.id;
+  const name = s(req.body.name);
+
+  const updated = await prisma.organicCategory.update({
+    where:{id},
+    data:{name}
+  });
+
+  res.json({category:updated});
+});
+
+app.delete("/api/organicshop/categories/:id", async (req,res)=>{
+  const gate = await requireOrganicPartnerApproved(req);
+  if(!gate.ok) return res.status(gate.status).json({message:gate.message});
+
+  const id = req.params.id;
+
+  await prisma.organicCategory.delete({
+    where:{id}
+  });
+
+  res.json({success:true});
+});
 // ============================================
 // DELIVERY MANAGEMENT ENDPOINTS
 // ============================================
