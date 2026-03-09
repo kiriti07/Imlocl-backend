@@ -1057,15 +1057,20 @@ app.put("/api/organicshop/items/:id", async (req, res) => {
       where: { id, organicShopId: shop.id },
     });
 
-    if (!existing) return res.status(404).json({ message: "Item not found" });
+    if (!existing) {
+      return res.status(404).json({ message: "Item not found" });
+    }
 
     const data: any = {};
-
     if (req.body.name !== undefined) data.name = s(req.body.name);
     if (req.body.unit !== undefined) data.unit = s(req.body.unit);
     if (req.body.price !== undefined) data.price = Number(req.body.price);
     if (req.body.minQty !== undefined) data.minQty = asFloat(req.body.minQty);
     if (req.body.stepQty !== undefined) data.stepQty = asFloat(req.body.stepQty);
+    if (req.body.category !== undefined) data.category = req.body.category ? s(req.body.category) : null;
+    if (req.body.organicCategoryId !== undefined) data.organicCategoryId = req.body.organicCategoryId ? s(req.body.organicCategoryId) : null;
+    if (req.body.description !== undefined) data.description = req.body.description ? s(req.body.description) : null;
+    if (req.body.stock !== undefined) data.stock = req.body.stock === null ? null : Number(req.body.stock);
     if (req.body.inStock !== undefined) data.inStock = Boolean(req.body.inStock);
 
     const item = await prisma.organicItem.update({
@@ -1074,67 +1079,48 @@ app.put("/api/organicshop/items/:id", async (req, res) => {
     });
 
     return res.json({ item });
-
-  } catch (e:any) {
-    console.error("ORGANIC ITEM UPDATE ERROR:", e);
-    return res.status(500).json({ message: e.message });
+  } catch (e: any) {
+    console.error("ORGANICSHOP/ITEM UPDATE ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
 
-app.delete("/api/organicshop/items/:id", async (req, res) => {
+
+
+app.put("/api/organicshop/categories/:id", async (req, res) => {
   try {
     const gate = await requireOrganicPartnerApproved(req);
     if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
 
     const shop = await ensureOrganicShop(gate.partner.id);
     const id = s(req.params.id);
+    const name = s(req.body.name);
 
-    const existing = await prisma.organicItem.findFirst({
+    if (!name) {
+      return res.status(400).json({ message: "Category name is required" });
+    }
+
+    const existing = await prisma.organicCategory.findFirst({
       where: { id, organicShopId: shop.id },
     });
 
-    if (!existing) return res.status(404).json({ message: "Item not found" });
+    if (!existing) {
+      return res.status(404).json({ message: "Category not found" });
+    }
 
-    await prisma.organicItem.update({
+    const category = await prisma.organicCategory.update({
       where: { id },
-      data: { inStock: false },
+      data: { name },
     });
 
-    return res.json({ ok: true });
-
-  } catch (e:any) {
-    console.error("ORGANIC ITEM DELETE ERROR:", e);
-    return res.status(500).json({ message: e.message });
+    return res.json({ category });
+  } catch (e: any) {
+    console.error("ORGANIC CATEGORY UPDATE ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
 
-app.put("/api/organicshop/categories/:id", async (req,res)=>{
-  const gate = await requireOrganicPartnerApproved(req);
-  if(!gate.ok) return res.status(gate.status).json({message:gate.message});
 
-  const id = req.params.id;
-  const name = s(req.body.name);
-
-  const updated = await prisma.organicCategory.update({
-    where:{id},
-    data:{name}
-  });
-
-  res.json({category:updated});
-});
-
-app.delete("/api/organicshop/categories/:id", async (req,res)=>{
-  const gate = await requireOrganicPartnerApproved(req);
-  if(!gate.ok) return res.status(gate.status).json({message:gate.message});
-
-  const id = req.params.id;
-
-  await prisma.organicCategory.delete({
-    where:{id}
-  });
-
-  res.json({success:true});
-});
 // ============================================
 // DELIVERY MANAGEMENT ENDPOINTS
 // ============================================
