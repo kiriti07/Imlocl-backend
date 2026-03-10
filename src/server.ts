@@ -1147,6 +1147,39 @@ app.put("/api/organicshop/categories/:id", async (req, res) => {
   }
 });
 
+app.delete("/api/organicshop/categories/:id", async (req, res) => {
+  try {
+    const gate = await requireOrganicPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await ensureOrganicShop(gate.partner.id);
+    const id = s(req.params.id);
+
+    const existing = await prisma.organicCategory.findFirst({
+      where: { id, organicShopId: shop.id },
+      include: { items: true },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: "Category not found" });
+    }
+
+    if ((existing.items?.length || 0) > 0) {
+      return res.status(400).json({
+        message: "Cannot delete category because it still contains items",
+      });
+    }
+
+    await prisma.organicCategory.delete({
+      where: { id },
+    });
+
+    return res.json({ ok: true });
+  } catch (e: any) {
+    console.error("ORGANIC CATEGORY DELETE ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
 
 // ============================================
 // DELIVERY MANAGEMENT ENDPOINTS
