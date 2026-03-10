@@ -1010,7 +1010,9 @@ app.post("/api/organicshop/items", async (req, res) => {
 app.post("/api/organicshop/items/:id/image", upload.single("image"), async (req, res) => {
   try {
     const gate = await requireOrganicPartnerApproved(req);
-    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+    if (!gate.ok) {
+      return res.status(gate.status).json({ message: gate.message });
+    }
 
     const shop = await ensureOrganicShop(gate.partner.id);
     const id = s(req.params.id);
@@ -1027,16 +1029,41 @@ app.post("/api/organicshop/items/:id/image", upload.single("image"), async (req,
       return res.status(400).json({ message: "Missing file field 'image'" });
     }
 
-    const fileName = `organic-${Date.now()}-${req.file.originalname.replace(/\s+/g, "-")}`;
-    const filePath = path.join(UPLOAD_DIR, fileName);
-    fs.writeFileSync(filePath, req.file.buffer);
+    const businessName =
+      gate.partner.businessName ||
+      shop.shopName ||
+      gate.partner.fullName ||
+      "Organic Store";
 
-    const imageUrl = `${req.protocol}://${req.get("host")}/uploads/${fileName}`;
+    const categoryName =
+      existing.category ||
+      "Uncategorized";
+
+    const itemName =
+      existing.name ||
+      "Organic Item";
+
+    // Upload to Azure Blob Storage
+    const uploadResults = await uploadMultipleToAzure(
+      [req.file],
+      businessName,
+      "Organic Store",
+      categoryName,
+      itemName
+    );
+
+    const imageUrl = uploadResults?.[0]?.url;
+
+    if (!imageUrl) {
+      throw new Error("Azure upload failed: image URL not returned");
+    }
 
     const updated = await prisma.organicItem.update({
       where: { id },
       data: { imageUrl },
     });
+
+    console.log(`✅ Organic item image uploaded to Azure: ${imageUrl}`);
 
     return res.json({ item: updated, imageUrl });
   } catch (e: any) {
