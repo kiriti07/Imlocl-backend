@@ -249,6 +249,66 @@ app.get("/health", (req, res) => {
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
+app.post("/api/checkout/summary", async (req,res)=>{
+  const { serviceType, items, couponCode } = req.body;
+
+  const itemTotal = items.reduce((sum,i)=>sum + (i.price * i.qty),0);
+
+  const fees = await prisma.serviceFeeConfig.findMany({
+    where:{
+      service_type:serviceType,
+      is_active:true
+    }
+  });
+
+  let charges:any[]=[];
+
+  for(const f of fees){
+
+    let amount = f.amount;
+
+    if(f.fee_type==="percentage"){
+      amount = itemTotal * (f.amount/100);
+    }
+
+    charges.push({
+      code:f.fee_code,
+      label:f.fee_label,
+      amount
+    });
+  }
+
+  let discount=0;
+
+  if(couponCode){
+
+    const coupon = await prisma.coupon.findUnique({
+      where:{code:couponCode}
+    });
+
+    if(coupon){
+
+      if(coupon.discount_type==="flat")
+        discount = coupon.discount_value;
+
+      if(coupon.discount_type==="percentage")
+        discount = itemTotal * (coupon.discount_value/100);
+    }
+  }
+
+  const chargeTotal = charges.reduce((s,c)=>s+c.amount,0);
+
+  const grandTotal = itemTotal + chargeTotal - discount;
+
+  res.json({
+    itemTotal,
+    charges,
+    discount,
+    grandTotal
+  });
+
+});
+
 // ✅ PUBLIC: list all approved + open meat shops (for customer app)
 app.get("/api/public/meatshops", async (_req, res) => {
   try {
