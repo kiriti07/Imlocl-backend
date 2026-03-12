@@ -20,7 +20,7 @@
     "@azure/storage-blob": "^12.31.0",
     "@fastify/cors": "^11.2.0",
     "@fastify/env": "^5.0.3",
-    "@prisma/client": "^6.19.2",
+    "@prisma/client": "^6.18.0",
     "cors": "^2.8.6",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
@@ -35,7 +35,7 @@
     "@types/multer": "^2.1.0",
     "@types/node": "^25.2.3",
     "@types/socket.io": "^3.0.2",
-    "prisma": "^6.19.2",
+    "prisma": "^6.18.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }

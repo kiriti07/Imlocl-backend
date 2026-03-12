@@ -548,3 +548,85 @@ enum BookingStatus {
 
   @@map("BookingStatus")
 }
+
+model CustomerOrder {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderNumber       String              @unique
+  serviceType       String
+  storeType         String
+  storeId           String
+  storeName         String
+  customerName      String
+  customerPhone     String
+  customerAddress   String
+  customerLat       Float?
+  customerLng       Float?
+  paymentMethod     String
+  paymentStatus     String              @default("PENDING_CASH_COLLECTION")
+  orderStatus       String              @default("PLACED")
+  couponCode        String?
+  subtotal          Decimal             @db.Decimal(10, 2)
+  packagingCharge   Decimal             @default(0) @db.Decimal(10, 2)
+  deliveryFee       Decimal             @default(0) @db.Decimal(10, 2)
+  platformFee       Decimal             @default(0) @db.Decimal(10, 2)
+  handlingFee       Decimal             @default(0) @db.Decimal(10, 2)
+  gst               Decimal             @default(0) @db.Decimal(10, 2)
+  restaurantGst     Decimal             @default(0) @db.Decimal(10, 2)
+  gstOnDeliveryFee  Decimal             @default(0) @db.Decimal(10, 2)
+  lateNightFee      Decimal             @default(0) @db.Decimal(10, 2)
+  discount          Decimal             @default(0) @db.Decimal(10, 2)
+  totalAmount       Decimal             @db.Decimal(10, 2)
+  deliveryId        String?             @db.Uuid
+  deliveryPartnerId String?             @db.Uuid
+  placedAt          DateTime            @default(now()) @db.Timestamp(6)
+  acceptedAt        DateTime?           @db.Timestamp(6)
+  rejectedAt        DateTime?           @db.Timestamp(6)
+  readyForPickupAt  DateTime?           @db.Timestamp(6)
+  deliveredAt       DateTime?           @db.Timestamp(6)
+  cashCollectedAt   DateTime?           @db.Timestamp(6)
+  createdAt         DateTime            @default(now()) @db.Timestamp(6)
+  updatedAt         DateTime            @default(now()) @updatedAt @db.Timestamp(6)
+
+  items             CustomerOrderItem[]
+  statusHistory     OrderStatusHistory[]
+
+  @@index([storeId])
+  @@index([orderStatus])
+  @@index([paymentStatus])
+  @@index([deliveryId])
+  @@map("customer_order")
+}
+
+model CustomerOrderItem {
+  id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId    String        @db.Uuid
+  itemId     String
+  itemName   String
+  unit       String?
+  price      Decimal       @db.Decimal(10, 2)
+  quantity   Decimal       @db.Decimal(10, 2)
+  lineTotal  Decimal       @db.Decimal(10, 2)
+  imageUrl   String?
+  createdAt  DateTime      @default(now()) @db.Timestamp(6)
+
+  order      CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("customer_order_item")
+}
+
+model OrderStatusHistory {
+  id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId    String        @db.Uuid
+  status     String
+  note       String?
+  actorType  String?
+  actorId    String?
+  createdAt  DateTime      @default(now()) @db.Timestamp(6)
+
+  order      CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([status])
+  @@map("order_status_history")
+}

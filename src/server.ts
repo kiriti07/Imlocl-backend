@@ -155,6 +155,208 @@ function parseBearerToken(req: express.Request) {
   return auth.startsWith("Bearer ") ? auth.substring(7).trim() : "";
 }
 
+function generateOrderNumber(prefix: string = "IML") {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `${prefix}-${y}${m}${d}-${rand}`;
+}
+
+app.post("/api/orders", async (req, res) => {
+  try {
+    const {
+      serviceType,
+      storeId,
+      items = [],
+      customerName,
+      customerPhone,
+      customerAddress,
+      customerLat,
+      customerLng,
+      paymentMethod,
+      couponCode,
+      pricingSummary,
+    } = req.body;
+
+    if (!serviceType || !storeId || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "serviceType, storeId and items are required" });
+    }
+
+    if (!customerName || !customerPhone || !customerAddress) {
+      return res.status(400).json({ message: "customerName, customerPhone and customerAddress are required" });
+    }
+
+    if (!paymentMethod || String(paymentMethod).toUpperCase() !== "COD") {
+      return res.status(400).json({ message: "Only COD is implemented right now" });
+    }
+
+    const normalizedServiceType = String(serviceType).trim().toUpperCase();
+    const storeType = normalizedServiceType === "MEAT" ? "MEAT" : "ORGANIC";
+
+    let store: any = null;
+    if (storeType === "MEAT") {
+      store = await prisma.meatShop.findFirst({
+        where: {
+          id: storeId,
+          isOpen: true,
+          partner: {
+            role: PartnerRole.MEAT_PARTNER,
+            status: PartnerStatus.APPROVED,
+            isActive: true,
+          },
+        },
+        include: { partner: true },
+      });
+    } else {
+      store = await prisma.organicShop.findFirst({
+        where: {
+          id: storeId,
+          isOpen: true,
+          partner: {
+            role: PartnerRole.ORGANIC_PARTNER,
+            status: PartnerStatus.APPROVED,
+            isActive: true,
+          },
+        },
+        include: { partner: true },
+      });
+    }
+
+    if (!store) {
+      return res.status(404).json({ message: "Store not found or currently closed" });
+    }
+
+    const itemIds = items.map((x: any) => String(x.itemId));
+    let dbItems: any[] = [];
+
+    if (storeType === "MEAT") {
+      dbItems = await prisma.meatItem.findMany({
+        where: {
+          id: { in: itemIds },
+          meatShopId: store.id,
+          inStock: true,
+        },
+      });
+    } else {
+      dbItems = await prisma.organicItem.findMany({
+        where: {
+          id: { in: itemIds },
+          organicShopId: store.id,
+          inStock: true,
+        },
+      });
+    }
+
+    if (dbItems.length !== itemIds.length) {
+      return res.status(400).json({ message: "Some items are invalid or out of stock" });
+    }
+
+    const normalizedItems = items.map((raw: any) => {
+      const dbItem = dbItems.find((x: any) => x.id === String(raw.itemId));
+      const qty = Number(raw.quantity ?? 0);
+      const price = Number(dbItem.price ?? 0);
+      return {
+        itemId: dbItem.id,
+        itemName: dbItem.name,
+        unit: dbItem.unit ?? null,
+        imageUrl: dbItem.imageUrl ?? null,
+        quantity: qty,
+        price,
+        lineTotal: qty * price,
+      };
+    });
+
+    const subtotal = normalizedItems.reduce((sum: number, x: any) => sum + x.lineTotal, 0);
+
+    const order = await prisma.$transaction(async (tx) => {
+      const createdOrder = await tx.customerOrder.create({
+        data: {
+          orderNumber: generateOrderNumber(),
+          serviceType: normalizedServiceType,
+          storeType,
+          storeId: store.id,
+          storeName: store.shopName,
+          customerName: String(customerName).trim(),
+          customerPhone: String(customerPhone).trim(),
+          customerAddress: String(customerAddress).trim(),
+          customerLat: customerLat ?? null,
+          customerLng: customerLng ?? null,
+          paymentMethod: "COD",
+          paymentStatus: "PENDING_CASH_COLLECTION",
+          orderStatus: "PLACED",
+          couponCode: couponCode ? String(couponCode).trim().toUpperCase() : null,
+          subtotal: Number(pricingSummary?.subtotal ?? subtotal),
+          packagingCharge: Number(pricingSummary?.packagingCharge ?? 0),
+          deliveryFee: Number(pricingSummary?.deliveryFee ?? 0),
+          platformFee: Number(pricingSummary?.platformFee ?? 0),
+          handlingFee: Number(pricingSummary?.handlingFee ?? 0),
+          gst: Number(pricingSummary?.gst ?? 0),
+          restaurantGst: Number(pricingSummary?.restaurantGst ?? 0),
+          gstOnDeliveryFee: Number(pricingSummary?.gstOnDeliveryFee ?? 0),
+          lateNightFee: Number(pricingSummary?.lateNightFee ?? 0),
+          discount: Number(pricingSummary?.discount ?? 0),
+          totalAmount: Number(pricingSummary?.totalPayable ?? subtotal),
+          items: {
+            create: normalizedItems.map((x: any) => ({
+              itemId: x.itemId,
+              itemName: x.itemName,
+              unit: x.unit,
+              price: x.price,
+              quantity: x.quantity,
+              lineTotal: x.lineTotal,
+              imageUrl: x.imageUrl,
+            })),
+          },
+          statusHistory: {
+            create: {
+              status: "PLACED",
+              note: "Order placed by customer with COD",
+              actorType: "CUSTOMER",
+            },
+          },
+        },
+        include: {
+          items: true,
+          statusHistory: true,
+        },
+      });
+
+      await tx.orderPayment.create({
+        data: {
+          order_id: createdOrder.id,
+          payment_method: "COD",
+          payment_gateway: null,
+          transaction_id: null,
+          status: "PENDING_CASH_COLLECTION",
+          amount: Number(pricingSummary?.totalPayable ?? subtotal),
+        },
+      });
+
+      return createdOrder;
+    });
+
+    io.emit("store-new-order", {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      storeId: store.id,
+      storeName: store.shopName,
+      totalAmount: order.totalAmount,
+      paymentMethod: order.paymentMethod,
+      orderStatus: order.orderStatus,
+    });
+
+    return res.json({
+      message: "COD order placed successfully",
+      order,
+    });
+  } catch (e: any) {
+    console.error("CREATE ORDER ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
 async function authRequired(req: express.Request) {
   const token = parseBearerToken(req);
   if (!token) return { ok: false as const, status: 401, message: "Missing token" };
@@ -200,6 +402,21 @@ async function ensureMeatShop(partnerId: string) {
   });
 }
 
+async function requireDeliveryPartnerApproved(req: express.Request) {
+  const auth = await authRequired(req);
+  if (!auth.ok) return auth;
+
+  const partner = auth.partner;
+
+  if (partner.role !== PartnerRole.DELIVERY) {
+    return { ok: false as const, status: 403, message: "Only Delivery Partner can access this." };
+  }
+  if (partner.status !== PartnerStatus.APPROVED) {
+    return { ok: false as const, status: 403, message: "Account under review. Not approved yet." };
+  }
+
+  return { ok: true as const, partner };
+}
 // ----------------------
 // ORGANIC helpers
 // ----------------------
@@ -1467,70 +1684,76 @@ app.post("/api/deliveries", async (req, res) => {
 // ✅ Update delivery status (called by delivery partner)
 app.put("/api/deliveries/:id/status", async (req, res) => {
   try {
-    const gate = await requireMeatPartnerApproved(req);
-    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+    const id = req.params.id;
+    const { status } = req.body;
 
-    const { id } = req.params;
-    const { status, lat, lng } = req.body;
+    const gate = await requireDeliveryPartnerApproved(req);
+    if (!gate.ok) {
+      return res.status(gate.status).json({ message: gate.message });
+    }
 
-    const updateData: any = {
-      status,
-    };
+    const updateData: any = { status };
 
-    // Update timestamps based on status
-    if (status === 'ARRIVED_AT_STORE') {
-      // No timestamp needed
-    } else if (status === 'PICKED_UP') {
+    if (status === "ARRIVED_AT_STORE") {
+      updateData.arrivedAtStoreAt = new Date();
+    }
+
+    if (status === "PICKED_UP") {
       updateData.pickedUpAt = new Date();
-    } else if (status === 'DELIVERED') {
+    }
+
+    if (status === "DELIVERED") {
       updateData.deliveredAt = new Date();
-      
-      // Update partner's current orders count
-      const delivery = await prisma.delivery.findUnique({
-        where: { id },
-      });
-      
-      if (delivery) {
-        await prisma.deliveryPartner.update({
-          where: { id: delivery.partnerId },
-          data: { 
-            currentOrders: { decrement: 1 },
-            totalDeliveries: { increment: 1 },
-          },
-        });
-      }
     }
 
-    // Update location if provided
-    if (lat && lng) {
-      updateData.currentLat = lat;
-      updateData.currentLng = lng;
-      updateData.lastLocationUpdate = new Date();
-    }
-
-    const delivery = await prisma.delivery.update({
+    const updated = await prisma.delivery.update({
       where: { id },
       data: updateData,
     });
 
-    // Broadcast via WebSocket
-    io.to(`delivery-${id}`).emit('delivery-status', {
-      status: delivery.status,
-      estimatedDeliveryTime: delivery.estimatedDeliveryTime,
-    });
+    /* -----------------------------------------
+       UPDATE ORDER STATUS BASED ON DELIVERY
+    ------------------------------------------*/
 
-    if (lat && lng) {
-      io.to(`delivery-${id}`).emit('partner-location', {
-        lat,
-        lng,
-        timestamp: new Date(),
+    if (status === "PICKED_UP") {
+      await prisma.customerOrder.update({
+        where: { deliveryId: id },
+        data: {
+          orderStatus: "PICKED_UP",
+          statusHistory: {
+            create: {
+              status: "PICKED_UP",
+              note: "Order picked up by delivery partner",
+              actorType: "DELIVERY_PARTNER",
+              actorId: gate.partner.id,
+            },
+          },
+        },
       });
     }
 
-    return res.json({ delivery });
+    if (status === "DELIVERED") {
+      await prisma.customerOrder.update({
+        where: { deliveryId: id },
+        data: {
+          orderStatus: "DELIVERED",
+          deliveredAt: new Date(),
+          statusHistory: {
+            create: {
+              status: "DELIVERED",
+              note: "Order delivered to customer",
+              actorType: "DELIVERY_PARTNER",
+              actorId: gate.partner.id,
+            },
+          },
+        },
+      });
+    }
+
+    return res.json(updated);
   } catch (e: any) {
-    console.error("UPDATE DELIVERY STATUS ERROR:", e);
-    return res.status(500).json({ message: e?.message ?? "Server error" });
+    console.error("DELIVERY STATUS UPDATE ERROR:", e);
+    return res.status(500).json({ message: e.message });
   }
 });
 
@@ -3163,6 +3386,295 @@ app.put("/api/partner/profile", async (req, res) => {
   }
 });
 
+app.put("/api/orders/:id/store-accept", async (req, res) => {
+  try {
+    const orderId = s(req.params.id);
+
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (![PartnerRole.MEAT_PARTNER, PartnerRole.ORGANIC_PARTNER].includes(auth.partner.role)) {
+      return res.status(403).json({ message: "Only store partners can accept orders" });
+    }
+
+    const order = await prisma.customerOrder.findUnique({
+      where: { id: orderId },
+    });
+
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    let ownedStore: any = null;
+    if (auth.partner.role === PartnerRole.MEAT_PARTNER) {
+      ownedStore = await prisma.meatShop.findUnique({ where: { partnerId: auth.partner.id } });
+    } else {
+      ownedStore = await prisma.organicShop.findUnique({ where: { partnerId: auth.partner.id } });
+    }
+
+    if (!ownedStore || ownedStore.id !== order.storeId) {
+      return res.status(403).json({ message: "You cannot access this order" });
+    }
+
+    const updated = await prisma.customerOrder.update({
+      where: { id: orderId },
+      data: {
+        orderStatus: "STORE_ACCEPTED",
+        acceptedAt: new Date(),
+        statusHistory: {
+          create: {
+            status: "STORE_ACCEPTED",
+            note: "Order accepted by store",
+            actorType: "STORE",
+            actorId: auth.partner.id,
+          },
+        },
+      },
+      include: { items: true },
+    });
+
+    io.emit("order-status-updated", {
+      orderId: updated.id,
+      orderStatus: updated.orderStatus,
+    });
+
+    return res.json({ order: updated });
+  } catch (e: any) {
+    console.error("STORE ACCEPT ORDER ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+app.put("/api/orders/:id/store-reject", async (req, res) => {
+  try {
+    const orderId = s(req.params.id);
+    const reason = s(req.body.reason) || "Rejected by store";
+
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (![PartnerRole.MEAT_PARTNER, PartnerRole.ORGANIC_PARTNER].includes(auth.partner.role)) {
+      return res.status(403).json({ message: "Only store partners can reject orders" });
+    }
+
+    const order = await prisma.customerOrder.update({
+      where: { id: orderId },
+      data: {
+        orderStatus: "STORE_REJECTED",
+        rejectedAt: new Date(),
+        statusHistory: {
+          create: {
+            status: "STORE_REJECTED",
+            note: reason,
+            actorType: "STORE",
+            actorId: auth.partner.id,
+          },
+        },
+      },
+    });
+
+    io.emit("order-status-updated", {
+      orderId: order.id,
+      orderStatus: order.orderStatus,
+    });
+
+    return res.json({ order });
+  } catch (e: any) {
+    console.error("STORE REJECT ORDER ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+app.put("/api/orders/:id/ready-for-pickup", async (req, res) => {
+  try {
+    const orderId = s(req.params.id);
+
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    if (![PartnerRole.MEAT_PARTNER, PartnerRole.ORGANIC_PARTNER].includes(auth.partner.role)) {
+      return res.status(403).json({ message: "Only store partners can update this order" });
+    }
+
+    const order = await prisma.customerOrder.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    const availablePartner = await prisma.deliveryPartner.findFirst({
+      where: {
+        isAvailable: true,
+        currentOrders: { lt: 3 },
+        partner: {
+          role: PartnerRole.DELIVERY,
+          status: PartnerStatus.APPROVED,
+          isActive: true,
+        },
+      },
+      include: { partner: true },
+    });
+
+    if (!availablePartner) {
+      const updated = await prisma.customerOrder.update({
+        where: { id: orderId },
+        data: {
+          orderStatus: "READY_FOR_PICKUP",
+          readyForPickupAt: new Date(),
+          statusHistory: {
+            create: {
+              status: "READY_FOR_PICKUP",
+              note: "Ready, but no delivery partner assigned yet",
+              actorType: "STORE",
+              actorId: auth.partner.id,
+            },
+          },
+        },
+      });
+
+      return res.json({
+        order: updated,
+        message: "Order ready, but no delivery partner available right now",
+      });
+    }
+
+    const delivery = await prisma.delivery.create({
+      data: {
+        orderId: order.id,
+        partnerId: availablePartner.id,
+        customerName: order.customerName,
+        customerPhone: order.customerPhone,
+        customerAddress: order.customerAddress,
+        storeId: order.storeId,
+        storeName: order.storeName,
+        storeAddress: null,
+        status: "ASSIGNED",
+        assignedAt: new Date(),
+        estimatedPickupTime: calculatePickupTime(),
+        estimatedDeliveryTime: calculateDeliveryTime(),
+        items: order.items,
+        totalAmount: Number(order.totalAmount),
+      },
+      include: {
+        partner: { include: { partner: true } },
+      },
+    });
+
+    await prisma.deliveryPartner.update({
+      where: { id: availablePartner.id },
+      data: { currentOrders: { increment: 1 } },
+    });
+
+    const updatedOrder = await prisma.customerOrder.update({
+      where: { id: order.id },
+      data: {
+        orderStatus: "DELIVERY_ASSIGNED",
+        readyForPickupAt: new Date(),
+        deliveryId: delivery.id,
+        deliveryPartnerId: availablePartner.id,
+        statusHistory: {
+          create: [
+            {
+              status: "READY_FOR_PICKUP",
+              note: "Order is ready for pickup",
+              actorType: "STORE",
+              actorId: auth.partner.id,
+            },
+            {
+              status: "DELIVERY_ASSIGNED",
+              note: `Assigned to delivery partner ${availablePartner.partner.fullName}`,
+              actorType: "SYSTEM",
+            },
+          ],
+        },
+      },
+    });
+
+    io.emit("delivery-assigned", {
+      orderId: updatedOrder.id,
+      deliveryId: delivery.id,
+      deliveryPartnerId: availablePartner.id,
+      partnerName: availablePartner.partner.fullName,
+    });
+
+    return res.json({
+      order: updatedOrder,
+      delivery,
+    });
+  } catch (e: any) {
+    console.error("READY FOR PICKUP ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+app.put("/api/orders/:id/cash-received", async (req, res) => {
+  try {
+    const orderId = s(req.params.id);
+
+    const gate = await requireDeliveryPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const deliveryPartner = await prisma.deliveryPartner.findUnique({
+      where: { partnerId: gate.partner.id },
+    });
+
+    if (!deliveryPartner) {
+      return res.status(404).json({ message: "Delivery partner profile not found" });
+    }
+
+    const order = await prisma.customerOrder.findUnique({
+      where: { id: orderId },
+    });
+
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    if (order.deliveryPartnerId !== deliveryPartner.id) {
+      return res.status(403).json({ message: "This order is not assigned to you" });
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedOrder = await tx.customerOrder.update({
+        where: { id: orderId },
+        data: {
+          paymentStatus: "CASH_COLLECTED",
+          orderStatus: "COMPLETED",
+          cashCollectedAt: new Date(),
+          statusHistory: {
+            create: {
+              status: "CASH_COLLECTED",
+              note: "Cash collected from customer by delivery partner",
+              actorType: "DELIVERY_PARTNER",
+              actorId: gate.partner.id,
+            },
+          },
+        },
+      });
+
+      await tx.orderPayment.updateMany({
+        where: { order_id: orderId },
+        data: {
+          status: "CASH_COLLECTED",
+          transaction_id: `COD-${Date.now()}`,
+        },
+      });
+
+      return updatedOrder;
+    });
+
+    io.emit("payment-updated", {
+      orderId: updated.id,
+      paymentStatus: updated.paymentStatus,
+      orderStatus: updated.orderStatus,
+    });
+
+    return res.json({
+      message: "Cash received marked successfully",
+      order: updated,
+    });
+  } catch (e: any) {
+    console.error("CASH RECEIVED ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
 // ----------------------
 // start
 // ----------------------
