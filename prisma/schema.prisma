@@ -550,8 +550,8 @@ enum BookingStatus {
 }
 
 model CustomerOrder {
-  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orderNumber       String              @unique
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderNumber       String   @unique
   serviceType       String
   storeType         String
   storeId           String
@@ -576,7 +576,7 @@ model CustomerOrder {
   lateNightFee      Decimal             @default(0) @db.Decimal(10, 2)
   discount          Decimal             @default(0) @db.Decimal(10, 2)
   totalAmount       Decimal             @db.Decimal(10, 2)
-  deliveryId        String?             @db.Uuid
+  deliveryId        String?             @unique @db.Uuid
   deliveryPartnerId String?             @db.Uuid
   placedAt          DateTime            @default(now()) @db.Timestamp(6)
   acceptedAt        DateTime?           @db.Timestamp(6)

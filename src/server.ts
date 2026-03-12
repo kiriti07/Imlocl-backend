@@ -3393,8 +3393,12 @@ app.put("/api/orders/:id/store-accept", async (req, res) => {
     const auth = await authRequired(req);
     if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
 
-    if (![PartnerRole.MEAT_PARTNER, PartnerRole.ORGANIC_PARTNER].includes(auth.partner.role)) {
-      return res.status(403).json({ message: "Only store partners can accept orders" });
+    const isStorePartner =
+      auth.partner.role === PartnerRole.MEAT_PARTNER ||
+      auth.partner.role === PartnerRole.ORGANIC_PARTNER;
+
+    if (!isStorePartner) {
+      return res.status(403).json({ message: "Only store partners can access this order" });
     }
 
     const order = await prisma.customerOrder.findUnique({
@@ -3451,8 +3455,12 @@ app.put("/api/orders/:id/store-reject", async (req, res) => {
     const auth = await authRequired(req);
     if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
 
-    if (![PartnerRole.MEAT_PARTNER, PartnerRole.ORGANIC_PARTNER].includes(auth.partner.role)) {
-      return res.status(403).json({ message: "Only store partners can reject orders" });
+    const isStorePartner =
+      auth.partner.role === PartnerRole.MEAT_PARTNER ||
+      auth.partner.role === PartnerRole.ORGANIC_PARTNER;
+
+    if (!isStorePartner) {
+      return res.status(403).json({ message: "Only store partners can access this order" });
     }
 
     const order = await prisma.customerOrder.update({
@@ -3490,8 +3498,12 @@ app.put("/api/orders/:id/ready-for-pickup", async (req, res) => {
     const auth = await authRequired(req);
     if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
 
-    if (![PartnerRole.MEAT_PARTNER, PartnerRole.ORGANIC_PARTNER].includes(auth.partner.role)) {
-      return res.status(403).json({ message: "Only store partners can update this order" });
+    const isStorePartner =
+      auth.partner.role === PartnerRole.MEAT_PARTNER ||
+      auth.partner.role === PartnerRole.ORGANIC_PARTNER;
+
+    if (!isStorePartner) {
+      return res.status(403).json({ message: "Only store partners can access this order" });
     }
 
     const order = await prisma.customerOrder.findUnique({
