@@ -126,6 +126,14 @@ function genToken() {
   return crypto.randomUUID();
 }
 
+function toNumber(value: any): number {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return Number(value) || 0;
+  if (typeof value?.toNumber === "function") return value.toNumber();
+  return Number(value) || 0;
+}
+
 function roleFromPartnerType(partnerType: string): PartnerRole {
   const pt = partnerType.toLowerCase();
 
@@ -249,64 +257,179 @@ app.get("/health", (req, res) => {
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-app.post("/api/checkout/summary", async (req,res)=>{
-  const { serviceType, items, couponCode } = req.body;
+app.post("/api/checkout/summary", async (req, res) => {
+  try {
+    const {
+      serviceType,
+      items = [],
+      couponCode,
+      city,
+      subtotal: subtotalFromBody,
+    } = req.body as {
+      serviceType?: string;
+      items?: Array<{ price?: number; quantity?: number }>;
+      couponCode?: string;
+      city?: string;
+      subtotal?: number;
+    };
 
-  const itemTotal = items.reduce((sum,i)=>sum + (i.price * i.qty),0);
-
-  const fees = await prisma.serviceFeeConfig.findMany({
-    where:{
-      service_type:serviceType,
-      is_active:true
-    }
-  });
-
-  let charges:any[]=[];
-
-  for(const f of fees){
-
-    let amount = f.amount;
-
-    if(f.fee_type==="percentage"){
-      amount = itemTotal * (f.amount/100);
+    if (!serviceType) {
+      return res.status(400).json({ message: "serviceType is required" });
     }
 
-    charges.push({
-      code:f.fee_code,
-      label:f.fee_label,
-      amount
+    const normalizedServiceType = String(serviceType).trim().toUpperCase();
+
+    const subtotal =
+      typeof subtotalFromBody === "number" && Number.isFinite(subtotalFromBody)
+        ? subtotalFromBody
+        : items.reduce((sum: number, item: { price?: number; quantity?: number }) => {
+            const price = Number(item?.price ?? 0);
+            const quantity = Number(item?.quantity ?? 0);
+            return sum + price * quantity;
+          }, 0);
+
+    const fees = await prisma.serviceFeeConfig.findMany({
+      where: {
+        service_type: normalizedServiceType,
+        is_active: true,
+      },
+      orderBy: {
+        created_at: "asc",
+      },
     });
-  }
 
-  let discount=0;
+    let packaging = 0;
+    let delivery = 0;
+    let handling = 0;
+    let platform = 0;
+    let lateNight = 0;
+    let restaurantGst = 0;
+    let gstOnDelivery = 0;
+    let gstPercent = 0;
 
-  if(couponCode){
+    for (const fee of fees) {
+      const amount = toNumber(fee.amount);
+      const feeCode = String(fee.fee_code ?? "").toUpperCase();
+      const feeType = String(fee.fee_type ?? "").toUpperCase();
 
-    const coupon = await prisma.coupon.findUnique({
-      where:{code:couponCode}
-    });
-
-    if(coupon){
-
-      if(coupon.discount_type==="flat")
-        discount = coupon.discount_value;
-
-      if(coupon.discount_type==="percentage")
-        discount = itemTotal * (coupon.discount_value/100);
+      switch (feeCode) {
+        case "PACKAGING":
+          packaging += amount;
+          break;
+        case "DELIVERY":
+          delivery += amount;
+          break;
+        case "HANDLING":
+          handling += amount;
+          break;
+        case "PLATFORM":
+          platform += amount;
+          break;
+        case "LATE_NIGHT":
+          lateNight += amount;
+          break;
+        case "RESTAURANT_GST":
+          restaurantGst += amount;
+          break;
+        case "GST_ON_DELIVERY":
+          gstOnDelivery += amount;
+          break;
+        case "GST":
+          if (feeType === "PERCENTAGE") {
+            gstPercent += amount;
+          } else {
+            restaurantGst += amount;
+          }
+          break;
+        default:
+          break;
+      }
     }
+
+    const preCouponTotal =
+      subtotal +
+      packaging +
+      delivery +
+      handling +
+      platform +
+      lateNight +
+      restaurantGst +
+      gstOnDelivery;
+
+    let couponDiscount = 0;
+    let appliedCoupon: any = null;
+
+    if (couponCode) {
+      const coupon = await prisma.coupon.findFirst({
+        where: {
+          code: String(couponCode).trim().toUpperCase(),
+          is_active: true,
+          OR: [
+            { service_type: null },
+            { service_type: normalizedServiceType },
+          ],
+        },
+      });
+
+      if (coupon) {
+        const minOrderValue = toNumber(coupon.min_order_value);
+        const discountValue = toNumber(coupon.discount_value);
+        const maxDiscount = toNumber(coupon.max_discount);
+        const discountType = String(coupon.discount_type ?? "").toUpperCase();
+
+        if (subtotal >= minOrderValue) {
+          if (discountType === "PERCENTAGE") {
+            couponDiscount = (subtotal * discountValue) / 100;
+          } else {
+            couponDiscount = discountValue;
+          }
+
+          if (maxDiscount > 0) {
+            couponDiscount = Math.min(couponDiscount, maxDiscount);
+          }
+
+          couponDiscount = Math.min(couponDiscount, preCouponTotal);
+          appliedCoupon = coupon;
+        }
+      }
+    }
+
+    const afterCoupon = Math.max(preCouponTotal - couponDiscount, 0);
+    const gstAmount = gstPercent > 0 ? (afterCoupon * gstPercent) / 100 : 0;
+    const total = afterCoupon + gstAmount;
+
+    return res.json({
+      summary: {
+        serviceType: normalizedServiceType,
+        city: city ?? null,
+        subtotal,
+        charges: {
+          packaging,
+          delivery,
+          handling,
+          platform,
+          lateNight,
+          restaurantGst,
+          gstOnDelivery,
+          gstPercent,
+          gstAmount,
+        },
+        coupon: appliedCoupon
+          ? {
+              code: appliedCoupon.code,
+              description: appliedCoupon.description,
+              discountType: appliedCoupon.discount_type,
+              discountValue: toNumber(appliedCoupon.discount_value),
+              discountAmount: couponDiscount,
+            }
+          : null,
+        total,
+      },
+    });
+  } catch (e: any) {
+    console.error("CHECKOUT SUMMARY ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
   }
-
-  const chargeTotal = charges.reduce((s,c)=>s+c.amount,0);
-
-  const grandTotal = itemTotal + chargeTotal - discount;
-
-  res.json({
-    itemTotal,
-    charges,
-    discount,
-    grandTotal
-  });
-
 });
 
 // ✅ PUBLIC: list all approved + open meat shops (for customer app)
@@ -1679,27 +1802,6 @@ app.delete("/api/meatshop/items/:id/image", async (req, res) => {
   }
 });
 
-// ----------------------
-// start
-// ----------------------
-async function main() {
-  await prisma.$connect();
-
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`✅ API running on http://0.0.0.0:${PORT}`);
-    console.log(`🔌 WebSocket server running on ws://0.0.0.0:${PORT}`);
-  });
-
-  ensureContainerExists()
-    .then(() => console.log("✅ Azure storage container ready"))
-    .catch((err) => console.error("⚠️ Azure storage init failed:", err));
-}
-
-main().catch((err) => {
-  console.error("❌ Failed to start server:", err);
-  process.exit(1);
-});
-
 // Add after your existing routes, before the server start
 
 // ============================================
@@ -2293,17 +2395,21 @@ app.post("/api/designer/designs/:id/image", upload.single("image"), async (req, 
     if (!req.file) {
       return res.status(400).json({ message: "No image uploaded" });
     }
-
-    const imageUrl = `http://localhost:${PORT}/uploads/${req.file.filename}`;
-
-    // Add to images array
+    
+    const fileName = `design-${Date.now()}-${req.file.originalname.replace(/\s+/g, "-")}`;
+    const filePath = path.join(UPLOAD_DIR, fileName);
+    
+    fs.writeFileSync(filePath, req.file.buffer);
+    
+    const imageUrl = `${req.protocol}://${req.get("host")}/uploads/${fileName}`;
+    
     const images = [...(existing.images || []), imageUrl];
-
+    
     await prisma.design.update({
       where: { id: designId },
       data: { images },
     });
-
+    
     return res.json({ imageUrl, images });
   } catch (e: any) {
     console.error("UPLOAD DESIGN IMAGE ERROR:", e);
@@ -3055,4 +3161,25 @@ app.put("/api/partner/profile", async (req, res) => {
     console.error("PROFILE UPDATE ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
+});
+
+// ----------------------
+// start
+// ----------------------
+async function main() {
+  await prisma.$connect();
+
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`✅ API running on http://0.0.0.0:${PORT}`);
+    console.log(`🔌 WebSocket server running on ws://0.0.0.0:${PORT}`);
+  });
+
+  ensureContainerExists()
+    .then(() => console.log("✅ Azure storage container ready"))
+    .catch((err) => console.error("⚠️ Azure storage init failed:", err));
+}
+
+main().catch((err) => {
+  console.error("❌ Failed to start server:", err);
+  process.exit(1);
 });

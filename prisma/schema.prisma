@@ -414,7 +414,7 @@ model CookBooking {
   @@map("CookBooking")
 }
 
-model coupon {
+model Coupon {
   id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   code            String    @unique
   description     String?
@@ -427,9 +427,11 @@ model coupon {
   usage_limit     Int?
   is_active       Boolean?  @default(true)
   created_at      DateTime? @default(now()) @db.Timestamp(6)
+
+  @@map("coupon")
 }
 
-model order_payment {
+model OrderPayment {
   id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   order_id        String?   @db.Uuid
   payment_method  String?
@@ -438,9 +440,11 @@ model order_payment {
   status          String?
   amount          Decimal?  @db.Decimal(10, 2)
   created_at      DateTime? @default(now()) @db.Timestamp(6)
+
+  @@map("order_payment")
 }
 
-model service_fee_config {
+model ServiceFeeConfig {
   id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   service_type    String
   fee_code        String
@@ -452,9 +456,11 @@ model service_fee_config {
   is_active       Boolean?  @default(true)
   created_at      DateTime? @default(now()) @db.Timestamp(6)
   updated_at      DateTime? @default(now()) @db.Timestamp(6)
+
+  @@map("service_fee_config")
 }
 
-model subscription_plan {
+model SubscriptionPlan {
   id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name          String?
   price         Decimal?  @db.Decimal(10, 2)
@@ -462,6 +468,8 @@ model subscription_plan {
   benefits      Json?
   is_active     Boolean?  @default(true)
   created_at    DateTime? @default(now()) @db.Timestamp(6)
+
+  @@map("subscription_plan")
 }
 
 enum PartnerStatus {
