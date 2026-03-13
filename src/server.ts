@@ -190,9 +190,7 @@ app.post("/api/orders", async (req, res) => {
       serviceType,
       storeId,
       items = [],
-      customerName,
-      customerPhone,
-      customerAddress,
+      addressId,
       customerLat,
       customerLng,
       paymentMethod,
@@ -204,10 +202,6 @@ app.post("/api/orders", async (req, res) => {
       return res.status(400).json({ message: "serviceType, storeId and items are required" });
     }
 
-    if (!customerName || !customerPhone || !customerAddress) {
-      return res.status(400).json({ message: "customerName, customerPhone and customerAddress are required" });
-    }
-
     if (!paymentMethod || String(paymentMethod).toUpperCase() !== "COD") {
       return res.status(400).json({ message: "Only COD is implemented right now" });
     }
@@ -217,7 +211,7 @@ app.post("/api/orders", async (req, res) => {
       return res.status(auth.status).json({ message: auth.message });
     }
 
-    const { addressId } = req.body;
+    // const { addressId } = req.body;
 
     const selectedAddress = await prisma.customerAddress.findFirst({
       where: {
@@ -316,11 +310,11 @@ app.post("/api/orders", async (req, res) => {
           storeType,
           storeId: store.id,
           storeName: store.shopName,
-          customerName: String(customerName).trim(),
-          customerPhone: String(customerPhone).trim(),
-          customerAddress: String(customerAddress).trim(),
-          customerLat: customerLat ?? null,
-          customerLng: customerLng ?? null,
+          customerName: auth.customer.fullName,
+          customerPhone: auth.customer.phone,
+          customerAddress: selectedAddress.fullAddress,
+          customerLat: selectedAddress.lat ?? null,
+          customerLng: selectedAddress.lng ?? null,
           paymentMethod: "COD",
           paymentStatus: "PENDING_CASH_COLLECTION",
           orderStatus: "PLACED",
