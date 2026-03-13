@@ -63,27 +63,53 @@ const upload = multer({
 ensureContainerExists().catch(console.error);
 
 
-io.on('connection', (socket) => {
-  console.log('Delivery partner connected:', socket.id);
-  
-  // Partner sends location updates
-  socket.on('location-update', (data) => {
-    const { deliveryId, lat, lng, timestamp } = data;
-    
-    // Store in database (batch writes recommended) [citation:3]
-    // cacheLocation(deliveryId, { lat, lng, timestamp });
-    
-    // Broadcast to customer watching this delivery
-    io.to(`delivery-${deliveryId}`).emit('partner-location', {
-      lat, lng, timestamp
+io.on("connection", (socket) => {
+  console.log("Socket connected:", socket.id);
+
+  socket.on("join-store-room", (storeId: string) => {
+    if (storeId) {
+      socket.join(`store-${storeId}`);
+      console.log(`Socket ${socket.id} joined store-${storeId}`);
+    }
+  });
+
+  socket.on("join-customer-room", (customerId: string) => {
+    if (customerId) {
+      socket.join(`customer-${customerId}`);
+      console.log(`Socket ${socket.id} joined customer-${customerId}`);
+    }
+  });
+
+  socket.on("join-order-room", (orderId: string) => {
+    if (orderId) {
+      socket.join(`order-${orderId}`);
+      console.log(`Socket ${socket.id} joined order-${orderId}`);
+    }
+  });
+
+  socket.on("join-delivery-room", (deliveryId: string) => {
+    if (deliveryId) {
+      socket.join(`delivery-${deliveryId}`);
+      console.log(`Socket ${socket.id} joined delivery-${deliveryId}`);
+    }
+  });
+
+  socket.on("location-update", (data) => {
+    const { deliveryId, lat, lng, timestamp } = data || {};
+    if (!deliveryId) return;
+
+    io.to(`delivery-${deliveryId}`).emit("partner-location", {
+      lat,
+      lng,
+      timestamp,
     });
   });
-  
-  // Customer subscribes to delivery tracking
-  socket.on('track-delivery', (deliveryId) => {
-    socket.join(`delivery-${deliveryId}`);
+
+  socket.on("disconnect", () => {
+    console.log("Socket disconnected:", socket.id);
   });
 });
+
 
 function calculatePickupTime() {
   const dt = new Date();
@@ -369,7 +395,7 @@ app.post("/api/orders", async (req, res) => {
       return createdOrder;
     });
 
-    io.emit("store-new-order", {
+    io.to(`store-${store.id}`).emit("store-new-order", {
       orderId: order.id,
       orderNumber: order.orderNumber,
       storeId: store.id,
@@ -377,7 +403,22 @@ app.post("/api/orders", async (req, res) => {
       totalAmount: order.totalAmount,
       paymentMethod: order.paymentMethod,
       orderStatus: order.orderStatus,
+      createdAt: order.createdAt,
     });
+
+    io.to(`customer-${auth.customer.id}`).emit("customer-order-created", {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      orderStatus: order.orderStatus,
+      totalAmount: order.totalAmount,
+      createdAt: order.createdAt,
+    });
+
+    io.to(`order-${order.id}`).emit("order-status-updated", {
+      orderId: order.id,
+      orderStatus: order.orderStatus,
+    });
+
 
     return res.json({
       message: "COD order placed successfully",
@@ -449,6 +490,110 @@ async function requireDeliveryPartnerApproved(req: express.Request) {
 
   return { ok: true as const, partner };
 }
+
+app.get("/api/customer/orders", async (req, res) => {
+  try {
+    const auth = await customerAuthRequired(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ message: auth.message });
+    }
+
+    const orders = await prisma.customerOrder.findMany({
+      where: {
+        customerPhone: auth.customer.phone,
+      },
+      include: {
+        items: true,
+        statusHistory: {
+          orderBy: { createdAt: "desc" },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.json({ orders });
+  } catch (e: any) {
+    console.error("CUSTOMER ORDERS ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+app.get("/api/customer/orders/:id", async (req, res) => {
+  try {
+    const auth = await customerAuthRequired(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ message: auth.message });
+    }
+
+    const orderId = s(req.params.id);
+
+    const order = await prisma.customerOrder.findFirst({
+      where: {
+        id: orderId,
+        customerPhone: auth.customer.phone,
+      },
+      include: {
+        items: true,
+        statusHistory: {
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    return res.json({ order });
+  } catch (e: any) {
+    console.error("CUSTOMER ORDER DETAIL ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+app.get("/api/orders/:id", async (req, res) => {
+  try {
+    const orderId = s(req.params.id);
+
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    const order = await prisma.customerOrder.findUnique({
+      where: { id: orderId },
+      include: {
+        items: true,
+        statusHistory: {
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    let ownedStore: any = null;
+
+    if (auth.partner.role === PartnerRole.MEAT_PARTNER) {
+      ownedStore = await prisma.meatShop.findUnique({
+        where: { partnerId: auth.partner.id },
+      });
+    } else if (auth.partner.role === PartnerRole.ORGANIC_PARTNER) {
+      ownedStore = await prisma.organicShop.findUnique({
+        where: { partnerId: auth.partner.id },
+      });
+    }
+
+    if (!ownedStore || ownedStore.id !== order.storeId) {
+      return res.status(403).json({ message: "You cannot access this order" });
+    }
+
+    return res.json({ order });
+  } catch (e: any) {
+    console.error("STORE ORDER DETAIL ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
 
 
 // ============================================
@@ -2057,6 +2202,23 @@ app.put("/api/deliveries/:id/status", async (req, res) => {
             },
           },
         },
+      });
+    }
+
+    io.to(`delivery-${id}`).emit("delivery-status-updated", {
+      deliveryId: id,
+      status,
+    });
+
+    if (updated?.orderId) {
+      io.to(`order-${updated.orderId}`).emit("order-status-updated", {
+        orderId: updated.orderId,
+        orderStatus:
+          status === "PICKED_UP"
+            ? "PICKED_UP"
+            : status === "DELIVERED"
+            ? "DELIVERED"
+            : status,
       });
     }
 
@@ -3745,10 +3907,21 @@ app.put("/api/orders/:id/store-accept", async (req, res) => {
       include: { items: true },
     });
 
-    io.emit("order-status-updated", {
+    io.to(`order-${updated.id}`).emit("order-status-updated", {
       orderId: updated.id,
       orderStatus: updated.orderStatus,
     });
+
+    io.to(`store-${updated.storeId}`).emit("store-order-updated", {
+      orderId: updated.id,
+      orderStatus: updated.orderStatus,
+    });
+
+    io.emit("customer-order-status-updated", {
+      orderId: updated.id,
+      orderStatus: updated.orderStatus,
+    });
+
 
     return res.json({ order: updated });
   } catch (e: any) {
@@ -3789,10 +3962,16 @@ app.put("/api/orders/:id/store-reject", async (req, res) => {
       },
     });
 
-    io.emit("order-status-updated", {
+    io.to(`order-${order.id}`).emit("order-status-updated", {
       orderId: order.id,
       orderStatus: order.orderStatus,
     });
+    
+    io.to(`store-${order.storeId}`).emit("store-order-updated", {
+      orderId: order.id,
+      orderStatus: order.orderStatus,
+    });
+    
 
     return res.json({ order });
   } catch (e: any) {
@@ -3911,12 +4090,25 @@ app.put("/api/orders/:id/ready-for-pickup", async (req, res) => {
       },
     });
 
-    io.emit("delivery-assigned", {
+    io.to(`order-${updatedOrder.id}`).emit("order-status-updated", {
+      orderId: updatedOrder.id,
+      orderStatus: updatedOrder.orderStatus,
+      deliveryId: delivery.id,
+    });
+    
+    io.to(`store-${updatedOrder.storeId}`).emit("store-order-updated", {
+      orderId: updatedOrder.id,
+      orderStatus: updatedOrder.orderStatus,
+      deliveryId: delivery.id,
+    });
+    
+    io.to(`delivery-${delivery.id}`).emit("delivery-assigned", {
       orderId: updatedOrder.id,
       deliveryId: delivery.id,
       deliveryPartnerId: availablePartner.id,
       partnerName: availablePartner.partner.fullName,
     });
+    
 
     return res.json({
       order: updatedOrder,
