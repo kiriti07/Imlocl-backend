@@ -896,45 +896,6 @@ app.post("/api/checkout/summary", async (req, res) => {
   }
 });
 
-app.post("/api/customers/register", async (req, res) => {
-  try {
-    const { fullName, phone, email } = req.body;
-
-    if (!phone) {
-      return res.status(400).json({ message: "Phone required" });
-    }
-
-    let customer = await prisma.customer.findUnique({
-      where: { phone },
-      include: { addresses: true },
-    });
-
-    if (!customer) {
-      customer = await prisma.customer.create({
-        data: {
-          fullName,
-          phone,
-          email,
-          addresses: {
-            create: {
-              label: "Home",
-              fullAddress: "Hyderabad",
-              city: "Hyderabad",
-              isDefault: true,
-            },
-          },
-        },
-        include: { addresses: true },
-      });
-    }
-
-    return res.json({ customer });
-
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ message: "Failed to register customer" });
-  }
-});
 
 // ✅ PUBLIC: list all approved + open meat shops (for customer app)
 app.get("/api/public/meatshops", async (_req, res) => {
