@@ -456,21 +456,6 @@ async function requireDeliveryPartnerApproved(req: express.Request) {
   return { ok: true as const, partner };
 }
 
-async function customerAuthRequired(req: express.Request) {
-  const token = parseBearerToken(req);
-  if (!token) return { ok: false as const, status: 401, message: "Missing token" };
-
-  const customer = await prisma.customer.findFirst({
-    where: { token, isActive: true },
-    include: { addresses: true },
-  });
-
-  if (!customer) {
-    return { ok: false as const, status: 401, message: "Invalid customer token" };
-  }
-
-  return { ok: true as const, customer };
-}
 
 // ============================================
 // CUSTOMER AUTH + PROFILE
