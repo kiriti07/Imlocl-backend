@@ -5,7 +5,7 @@ import cors from "cors";
 import { PrismaClient, PartnerRole, PartnerStatus } from "@prisma/client";
 import { uploadMultipleToAzure } from "./utils/azure-storage-helper";
 import { ensureContainerExists } from "./config/azure-storage";
-
+import bcrypt from "bcryptjs";
 import { uploadMeatItemImage, uploadMultipleMeatItemImages } from "./utils/azure-storage-helper-meat";
 import { Server } from 'socket.io';
 import crypto from "crypto";
@@ -126,6 +126,26 @@ function genToken() {
   return crypto.randomUUID();
 }
 
+async function customerAuthRequired(req: express.Request) {
+  const token = parseBearerToken(req);
+  if (!token) return { ok: false as const, status: 401, message: "Missing token" };
+
+  const customer = await prisma.customer.findFirst({
+    where: { token, isActive: true },
+    include: {
+      addresses: {
+        orderBy: { createdAt: "desc" },
+      },
+    },
+  });
+
+  if (!customer) {
+    return { ok: false as const, status: 401, message: "Invalid customer token" };
+  }
+
+  return { ok: true as const, customer };
+}
+
 function toNumber(value: any): number {
   if (value === null || value === undefined) return 0;
   if (typeof value === "number") return value;
@@ -190,6 +210,24 @@ app.post("/api/orders", async (req, res) => {
 
     if (!paymentMethod || String(paymentMethod).toUpperCase() !== "COD") {
       return res.status(400).json({ message: "Only COD is implemented right now" });
+    }
+
+    const auth = await customerAuthRequired(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ message: auth.message });
+    }
+
+    const { addressId } = req.body;
+
+    const selectedAddress = await prisma.customerAddress.findFirst({
+      where: {
+        id: String(addressId),
+        customerId: auth.customer.id,
+      },
+    });
+
+    if (!selectedAddress) {
+      return res.status(400).json({ message: "Valid address is required" });
     }
 
     const normalizedServiceType = String(serviceType).trim().toUpperCase();
@@ -433,6 +471,214 @@ async function customerAuthRequired(req: express.Request) {
 
   return { ok: true as const, customer };
 }
+
+// ============================================
+// CUSTOMER AUTH + PROFILE
+// ============================================
+
+// Register customer
+app.post("/api/customers/register", async (req, res) => {
+  try {
+    const fullName = s(req.body.fullName);
+    const phone = s(req.body.phone);
+    const email = req.body.email ? s(req.body.email) : null;
+    const password = s(req.body.password);
+
+    const addressLabel = req.body.addressLabel ? s(req.body.addressLabel) : "Home";
+    const fullAddress = req.body.fullAddress ? s(req.body.fullAddress) : null;
+    const city = req.body.city ? s(req.body.city) : null;
+    const lat = asFloat(req.body.lat);
+    const lng = asFloat(req.body.lng);
+
+    if (!fullName || !phone || !password) {
+      return res.status(400).json({
+        message: "fullName, phone and password are required",
+      });
+    }
+
+    const existing = await prisma.customer.findUnique({
+      where: { phone },
+    });
+
+    if (existing) {
+      return res.status(409).json({ message: "Customer already exists. Please login." });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const token = genToken();
+
+    const customer = await prisma.customer.create({
+      data: {
+        fullName,
+        phone,
+        email,
+        passwordHash,
+        token,
+        addresses: fullAddress
+          ? {
+              create: {
+                label: addressLabel,
+                fullAddress,
+                city,
+                lat,
+                lng,
+                isDefault: true,
+              },
+            }
+          : undefined,
+      },
+      include: {
+        addresses: {
+          orderBy: { createdAt: "desc" },
+        },
+      },
+    });
+
+    return res.json({
+      token,
+      customer,
+    });
+  } catch (e: any) {
+    console.error("CUSTOMER REGISTER ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// Login customer
+app.post("/api/customers/login", async (req, res) => {
+  try {
+    const phone = s(req.body.phone);
+    const password = s(req.body.password);
+
+    if (!phone || !password) {
+      return res.status(400).json({ message: "phone and password are required" });
+    }
+
+    const customer = await prisma.customer.findUnique({
+      where: { phone },
+      include: {
+        addresses: {
+          orderBy: { createdAt: "desc" },
+        },
+      },
+    });
+
+    if (!customer) {
+      return res.status(404).json({ message: "Customer not found. Please register." });
+    }
+
+    const valid = await bcrypt.compare(password, customer.passwordHash);
+    if (!valid) {
+      return res.status(401).json({ message: "Invalid phone or password" });
+    }
+
+    const token = genToken();
+
+    const updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: { token },
+      include: {
+        addresses: {
+          orderBy: { createdAt: "desc" },
+        },
+      },
+    });
+
+    return res.json({
+      token,
+      customer: updated,
+    });
+  } catch (e: any) {
+    console.error("CUSTOMER LOGIN ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// Get current customer profile
+app.get("/api/customers/me", async (req, res) => {
+  try {
+    const auth = await customerAuthRequired(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ message: auth.message });
+    }
+
+    return res.json({ customer: auth.customer });
+  } catch (e: any) {
+    console.error("CUSTOMER ME ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// Add customer address
+app.post("/api/customers/addresses", async (req, res) => {
+  try {
+    const auth = await customerAuthRequired(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ message: auth.message });
+    }
+
+    const label = req.body.label ? s(req.body.label) : "Home";
+    const fullAddress = s(req.body.fullAddress);
+    const city = req.body.city ? s(req.body.city) : null;
+    const lat = asFloat(req.body.lat);
+    const lng = asFloat(req.body.lng);
+    const isDefault = Boolean(req.body.isDefault);
+
+    if (!fullAddress) {
+      return res.status(400).json({ message: "fullAddress is required" });
+    }
+
+    if (isDefault) {
+      await prisma.customerAddress.updateMany({
+        where: {
+          customerId: auth.customer.id,
+          isDefault: true,
+        },
+        data: {
+          isDefault: false,
+        },
+      });
+    }
+
+    const address = await prisma.customerAddress.create({
+      data: {
+        customerId: auth.customer.id,
+        label,
+        fullAddress,
+        city,
+        lat,
+        lng,
+        isDefault,
+      },
+    });
+
+    return res.json({ address });
+  } catch (e: any) {
+    console.error("CUSTOMER ADDRESS CREATE ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// List customer addresses
+app.get("/api/customers/addresses", async (req, res) => {
+  try {
+    const auth = await customerAuthRequired(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ message: auth.message });
+    }
+
+    const addresses = await prisma.customerAddress.findMany({
+      where: { customerId: auth.customer.id },
+      orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+    });
+
+    return res.json({ addresses });
+  } catch (e: any) {
+    console.error("CUSTOMER ADDRESSES ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
 // ----------------------
 // ORGANIC helpers
 // ----------------------
@@ -662,6 +908,46 @@ app.post("/api/checkout/summary", async (req, res) => {
   } catch (e: any) {
     console.error("CHECKOUT SUMMARY ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+app.post("/api/customers/register", async (req, res) => {
+  try {
+    const { fullName, phone, email } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({ message: "Phone required" });
+    }
+
+    let customer = await prisma.customer.findUnique({
+      where: { phone },
+      include: { addresses: true },
+    });
+
+    if (!customer) {
+      customer = await prisma.customer.create({
+        data: {
+          fullName,
+          phone,
+          email,
+          addresses: {
+            create: {
+              label: "Home",
+              fullAddress: "Hyderabad",
+              city: "Hyderabad",
+              isDefault: true,
+            },
+          },
+        },
+        include: { addresses: true },
+      });
+    }
+
+    return res.json({ customer });
+
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ message: "Failed to register customer" });
   }
 });
 
