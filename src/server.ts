@@ -1183,6 +1183,40 @@ app.post("/api/organicshop/categories", async (req, res) => {
   }
 });
 
+app.get("/api/organicshop/orders", async (req, res) => {
+  try {
+    const gate = await requireOrganicPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await prisma.organicShop.findUnique({
+      where: { partnerId: gate.partner.id },
+    });
+
+    if (!shop) {
+      return res.json({ orders: [] });
+    }
+
+    const orders = await prisma.customerOrder.findMany({
+      where: {
+        storeId: shop.id,
+        storeType: "ORGANIC",
+      },
+      include: {
+        items: true,
+        statusHistory: {
+          orderBy: { createdAt: "desc" },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.json({ orders });
+  } catch (e: any) {
+    console.error("ORGANIC SHOP ORDERS ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
 // ✅ REGISTER
 app.post("/api/partners/register", async (req, res) => {
   try {
@@ -1292,6 +1326,40 @@ app.get("/api/meatshop/me", async (req, res) => {
     return res.json({ shop });
   } catch (e: any) {
     console.error("MEATSHOP/ME ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+app.get("/api/meatshop/orders", async (req, res) => {
+  try {
+    const gate = await requireMeatPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const shop = await prisma.meatShop.findUnique({
+      where: { partnerId: gate.partner.id },
+    });
+
+    if (!shop) {
+      return res.json({ orders: [] });
+    }
+
+    const orders = await prisma.customerOrder.findMany({
+      where: {
+        storeId: shop.id,
+        storeType: "MEAT",
+      },
+      include: {
+        items: true,
+        statusHistory: {
+          orderBy: { createdAt: "desc" },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.json({ orders });
+  } catch (e: any) {
+    console.error("MEAT SHOP ORDERS ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
