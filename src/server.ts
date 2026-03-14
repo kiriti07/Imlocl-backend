@@ -2,7 +2,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { PrismaClient, PartnerRole, PartnerStatus, DeliveryStatus } from "@prisma/client";
+import { PrismaClient, PartnerRole, PartnerStatus, DeliveryStatus, VehicleType } from "@prisma/client";
 import { uploadMultipleToAzure } from "./utils/azure-storage-helper";
 import { ensureContainerExists } from "./config/azure-storage";
 import bcrypt from "bcryptjs";
@@ -217,6 +217,17 @@ function generateOrderNumber(prefix: string = "IML") {
   return `${prefix}-${y}${m}${d}-${rand}`;
 }
 
+function normalizeVehicleType(value?: string | null): VehicleType {
+  const v = String(value || "").trim().toUpperCase();
+
+  if (v === "BIKE") return VehicleType.BIKE;
+  if (v === "SCOOTY") return VehicleType.SCOOTY;
+  if (v === "CAR") return VehicleType.CAR;
+  if (v === "BICYCLE") return VehicleType.BIKE;
+
+  return VehicleType.BIKE;
+}
+
 async function ensureDeliveryPartnerProfile(partnerId: string, extras?: {
   drivingLicense?: string | null;
   vehicleNumber?: string | null;
@@ -234,7 +245,7 @@ async function ensureDeliveryPartnerProfile(partnerId: string, extras?: {
       partnerId,
       drivingLicense: extras?.drivingLicense || "PENDING",
       vehicleNumber: extras?.vehicleNumber || "PENDING",
-      vehicleType: extras?.vehicleType || "BIKE",
+      vehicleType: normalizeVehicleType(extras?.vehicleType),
       vehicleModel: extras?.vehicleModel || null,
       isAvailable: true,
     },
