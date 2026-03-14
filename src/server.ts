@@ -1429,6 +1429,28 @@ app.post("/api/partners/register", async (req, res) => {
 });
 
 // ✅ LOGIN
+// app.post("/api/auth/login", async (req, res) => {
+//   try {
+//     const phone = s(req.body.phone);
+//     if (!phone) return res.status(400).json({ message: "phone is required" });
+
+//     const partner = await prisma.partner.findFirst({ where: { phone } });
+//     if (!partner) return res.status(404).json({ message: "Partner not found. Please register." });
+
+//     const token = genToken();
+
+//     const updated = await prisma.partner.update({
+//       where: { id: partner.id },
+//       data: { token },
+//     });
+
+//     return res.json({ token, partner: updated });
+//   } catch (e: any) {
+//     console.error("LOGIN ERROR:", e);
+//     return res.status(500).json({ message: e?.message ?? "Server error" });
+//   }
+// });
+
 app.post("/api/auth/login", async (req, res) => {
   try {
     const phone = s(req.body.phone);
@@ -1439,48 +1461,60 @@ app.post("/api/auth/login", async (req, res) => {
 
     const token = genToken();
 
-    const updated = await prisma.partner.update({
+    await prisma.partner.update({
       where: { id: partner.id },
       data: { token },
     });
 
-    return res.json({ token, partner: updated });
+    const updatedPartner = await prisma.partner.findUnique({
+      where: { id: partner.id },
+      include: {
+        deliveryPartner: true,
+        designerProfile: true,
+        meatShop: true,
+        organicShop: true,
+        laundryShop: true,
+      },
+    });
+
+    return res.json({ token, partner: updatedPartner });
   } catch (e: any) {
     console.error("LOGIN ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
 
+
+// ✅ ME (refresh status)
 // app.get("/api/auth/me", async (req, res) => {
 //   try {
 //     const auth = await authRequired(req);
 //     if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
 
-//     const partner = await prisma.partner.findUnique({
-//       where: { id: auth.partner.id },
-//       include: {
-//         deliveryPartner: true,
-//         designerProfile: true,
-//         meatShop: true,
-//         organicShop: true,
-//         laundryShop: true,
-//       },
-//     });
-
-//     return res.json({ partner });
+//     return res.json({ partner: auth.partner });
 //   } catch (e: any) {
 //     console.error("ME ERROR:", e);
 //     return res.status(500).json({ message: e?.message ?? "Server error" });
 //   }
 // });
 
-// ✅ ME (refresh status)
 app.get("/api/auth/me", async (req, res) => {
   try {
     const auth = await authRequired(req);
     if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
 
-    return res.json({ partner: auth.partner });
+    const partner = await prisma.partner.findUnique({
+      where: { id: auth.partner.id },
+      include: {
+        deliveryPartner: true,
+        designerProfile: true,
+        meatShop: true,
+        organicShop: true,
+        laundryShop: true,
+      },
+    });
+
+    return res.json({ partner });
   } catch (e: any) {
     console.error("ME ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
