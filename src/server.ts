@@ -2525,7 +2525,30 @@ app.get("/api/delivery-partner/me/deliveries", async (req, res) => {
       orderBy: { assignedAt: "desc" },
     });
 
-    return res.json({ deliveries });
+    const orderIds = deliveries
+      .map((d) => d.orderId)
+      .filter((id): id is string => Boolean(id));
+
+    const orders = orderIds.length
+      ? await prisma.customerOrder.findMany({
+          where: {
+            id: { in: orderIds },
+          },
+          select: {
+            id: true,
+            orderNumber: true,
+          },
+        })
+      : [];
+
+    const orderMap = new Map(orders.map((o) => [o.id, o.orderNumber]));
+
+    const deliveriesWithOrderNumber = deliveries.map((delivery) => ({
+      ...delivery,
+      orderNumber: delivery.orderId ? orderMap.get(delivery.orderId) ?? null : null,
+    }));
+
+    return res.json({ deliveries: deliveriesWithOrderNumber });
   } catch (e: any) {
     console.error("GET MY DELIVERIES ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
@@ -2561,7 +2584,25 @@ app.get("/api/delivery-partner/me/deliveries/:id", async (req, res) => {
       return res.status(404).json({ message: "Delivery not found" });
     }
 
-    return res.json({ delivery });
+    let orderNumber: string | null = null;
+
+    if (delivery.orderId) {
+      const order = await prisma.customerOrder.findUnique({
+        where: { id: delivery.orderId },
+        select: {
+          orderNumber: true,
+        },
+      });
+
+      orderNumber = order?.orderNumber ?? null;
+    }
+
+    return res.json({
+      delivery: {
+        ...delivery,
+        orderNumber,
+      },
+    });
   } catch (e: any) {
     console.error("GET MY DELIVERY DETAIL ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
