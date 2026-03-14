@@ -493,6 +493,7 @@ enum PartnerRole {
 
 enum DeliveryStatus {
   ASSIGNED
+  ACCEPTED
   ON_THE_WAY_TO_STORE
   ARRIVED_AT_STORE
   PICKED_UP

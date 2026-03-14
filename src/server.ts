@@ -2,7 +2,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { PrismaClient, PartnerRole, PartnerStatus } from "@prisma/client";
+import { PrismaClient, PartnerRole, PartnerStatus, DeliveryStatus } from "@prisma/client";
 import { uploadMultipleToAzure } from "./utils/azure-storage-helper";
 import { ensureContainerExists } from "./config/azure-storage";
 import bcrypt from "bcryptjs";
@@ -1422,24 +1422,47 @@ app.post("/api/partners/register", async (req, res) => {
 });
 
 // ✅ LOGIN
-app.post("/api/auth/login", async (req, res) => {
+// app.post("/api/auth/login", async (req, res) => {
+//   try {
+//     const phone = s(req.body.phone);
+//     if (!phone) return res.status(400).json({ message: "phone is required" });
+
+//     const partner = await prisma.partner.findFirst({ where: { phone } });
+//     if (!partner) return res.status(404).json({ message: "Partner not found. Please register." });
+
+//     const token = genToken();
+
+//     const updated = await prisma.partner.update({
+//       where: { id: partner.id },
+//       data: { token },
+//     });
+
+//     return res.json({ token, partner: updated });
+//   } catch (e: any) {
+//     console.error("LOGIN ERROR:", e);
+//     return res.status(500).json({ message: e?.message ?? "Server error" });
+//   }
+// });
+
+app.get("/api/auth/me", async (req, res) => {
   try {
-    const phone = s(req.body.phone);
-    if (!phone) return res.status(400).json({ message: "phone is required" });
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
 
-    const partner = await prisma.partner.findFirst({ where: { phone } });
-    if (!partner) return res.status(404).json({ message: "Partner not found. Please register." });
-
-    const token = genToken();
-
-    const updated = await prisma.partner.update({
-      where: { id: partner.id },
-      data: { token },
+    const partner = await prisma.partner.findUnique({
+      where: { id: auth.partner.id },
+      include: {
+        deliveryPartner: true,
+        designerProfile: true,
+        meatShop: true,
+        organicShop: true,
+        laundryShop: true,
+      },
     });
 
-    return res.json({ token, partner: updated });
+    return res.json({ partner });
   } catch (e: any) {
-    console.error("LOGIN ERROR:", e);
+    console.error("ME ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
@@ -2366,6 +2389,233 @@ app.put("/api/delivery-partners/:id/availability", async (req, res) => {
     return res.json({ partner });
   } catch (e: any) {
     console.error("UPDATE PARTNER AVAILABILITY ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Get my deliveries (for logged-in delivery partner)
+app.get("/api/delivery-partner/me/deliveries", async (req, res) => {
+  try {
+    const gate = await requireDeliveryPartnerApproved(req);
+    if (!gate.ok) {
+      return res.status(gate.status).json({ message: gate.message });
+    }
+
+    const deliveryPartner = await prisma.deliveryPartner.findUnique({
+      where: { partnerId: gate.partner.id },
+    });
+
+    if (!deliveryPartner) {
+      return res.json({ deliveries: [] });
+    }
+
+    const deliveries = await prisma.delivery.findMany({
+      where: {
+        partnerId: deliveryPartner.id,
+      },
+      orderBy: { assignedAt: "desc" },
+    });
+
+    return res.json({ deliveries });
+  } catch (e: any) {
+    console.error("GET MY DELIVERIES ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Get one delivery detail for logged-in delivery partner
+app.get("/api/delivery-partner/me/deliveries/:id", async (req, res) => {
+  try {
+    const gate = await requireDeliveryPartnerApproved(req);
+    if (!gate.ok) {
+      return res.status(gate.status).json({ message: gate.message });
+    }
+
+    const deliveryPartner = await prisma.deliveryPartner.findUnique({
+      where: { partnerId: gate.partner.id },
+    });
+
+    if (!deliveryPartner) {
+      return res.status(404).json({ message: "Delivery partner profile not found" });
+    }
+
+    const id = s(req.params.id);
+
+    const delivery = await prisma.delivery.findFirst({
+      where: {
+        id,
+        partnerId: deliveryPartner.id,
+      },
+    });
+
+    if (!delivery) {
+      return res.status(404).json({ message: "Delivery not found" });
+    }
+
+    return res.json({ delivery });
+  } catch (e: any) {
+    console.error("GET MY DELIVERY DETAIL ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Accept assigned delivery
+app.put("/api/deliveries/:id/accept", async (req, res) => {
+  try {
+    const gate = await requireDeliveryPartnerApproved(req);
+    if (!gate.ok) {
+      return res.status(gate.status).json({ message: gate.message });
+    }
+
+    const deliveryPartner = await prisma.deliveryPartner.findUnique({
+      where: { partnerId: gate.partner.id },
+    });
+
+    if (!deliveryPartner) {
+      return res.status(404).json({ message: "Delivery partner profile not found" });
+    }
+
+    const id = s(req.params.id);
+
+    const delivery = await prisma.delivery.findFirst({
+      where: {
+        id,
+        partnerId: deliveryPartner.id,
+      },
+    });
+
+    if (!delivery) {
+      return res.status(404).json({ message: "Delivery not found" });
+    }
+
+    const updated = await prisma.delivery.update({
+      where: { id },
+      data: {
+        status: DeliveryStatus.ON_THE_WAY_TO_STORE,
+      },
+    });
+
+    if (updated.orderId) {
+      await prisma.customerOrder.update({
+        where: { id: updated.orderId },
+        data: {
+          orderStatus: "DELIVERY_ACCEPTED",
+          statusHistory: {
+            create: {
+              status: "DELIVERY_ACCEPTED",
+              note: "Delivery accepted by delivery partner",
+              actorType: "DELIVERY_PARTNER",
+              actorId: gate.partner.id,
+            },
+          },
+        },
+      });
+    }
+
+    io.to(`delivery-${updated.id}`).emit("delivery-status-updated", {
+      deliveryId: updated.id,
+      status: updated.status,
+    });
+
+    if (updated.orderId) {
+      io.to(`order-${updated.orderId}`).emit("order-status-updated", {
+        orderId: updated.orderId,
+        orderStatus: "DELIVERY_ACCEPTED",
+      });
+    }
+
+    return res.json({ delivery: updated });
+  } catch (e: any) {
+    console.error("ACCEPT DELIVERY ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+// ✅ Reject assigned delivery
+app.put("/api/deliveries/:id/reject", async (req, res) => {
+  try {
+    const gate = await requireDeliveryPartnerApproved(req);
+    if (!gate.ok) {
+      return res.status(gate.status).json({ message: gate.message });
+    }
+
+    const reason = s(req.body.reason) || "Rejected by delivery partner";
+
+    const deliveryPartner = await prisma.deliveryPartner.findUnique({
+      where: { partnerId: gate.partner.id },
+    });
+
+    if (!deliveryPartner) {
+      return res.status(404).json({ message: "Delivery partner profile not found" });
+    }
+
+    const id = s(req.params.id);
+
+    const delivery = await prisma.delivery.findFirst({
+      where: {
+        id,
+        partnerId: deliveryPartner.id,
+      },
+    });
+
+    if (!delivery) {
+      return res.status(404).json({ message: "Delivery not found" });
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const cancelledDelivery = await tx.delivery.update({
+        where: { id },
+        data: {
+          status: "CANCELLED",
+        },
+      });
+
+      await tx.deliveryPartner.update({
+        where: { id: deliveryPartner.id },
+        data: {
+          currentOrders: {
+            decrement: 1,
+          },
+        },
+      });
+
+      if (cancelledDelivery.orderId) {
+        await tx.customerOrder.update({
+          where: { id: cancelledDelivery.orderId },
+          data: {
+            orderStatus: "READY_FOR_PICKUP",
+            deliveryId: null,
+            deliveryPartnerId: null,
+            statusHistory: {
+              create: {
+                status: "DELIVERY_REJECTED",
+                note: reason,
+                actorType: "DELIVERY_PARTNER",
+                actorId: gate.partner.id,
+              },
+            },
+          },
+        });
+      }
+
+      return cancelledDelivery;
+    });
+
+    io.to(`delivery-${updated.id}`).emit("delivery-status-updated", {
+      deliveryId: updated.id,
+      status: updated.status,
+    });
+
+    if (updated.orderId) {
+      io.to(`order-${updated.orderId}`).emit("order-status-updated", {
+        orderId: updated.orderId,
+        orderStatus: "READY_FOR_PICKUP",
+      });
+    }
+
+    return res.json({ delivery: updated });
+  } catch (e: any) {
+    console.error("REJECT DELIVERY ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
@@ -4000,7 +4250,9 @@ app.put("/api/orders/:id/ready-for-pickup", async (req, res) => {
       include: { items: true },
     });
 
-    if (!order) return res.status(404).json({ message: "Order not found" });
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
 
     const availablePartner = await prisma.deliveryPartner.findFirst({
       where: {
@@ -4038,6 +4290,21 @@ app.put("/api/orders/:id/ready-for-pickup", async (req, res) => {
       });
     }
 
+    // ✅ Fetch real store address based on store type
+    let storeAddress: string | null = null;
+
+    if (order.storeType === "MEAT") {
+      const meatShop = await prisma.meatShop.findUnique({
+        where: { id: order.storeId },
+      });
+      storeAddress = meatShop?.address ?? null;
+    } else if (order.storeType === "ORGANIC") {
+      const organicShop = await prisma.organicShop.findUnique({
+        where: { id: order.storeId },
+      });
+      storeAddress = organicShop?.address ?? null;
+    }
+
     const delivery = await prisma.delivery.create({
       data: {
         orderId: order.id,
@@ -4047,7 +4314,7 @@ app.put("/api/orders/:id/ready-for-pickup", async (req, res) => {
         customerAddress: order.customerAddress,
         storeId: order.storeId,
         storeName: order.storeName,
-        storeAddress: null,
+        storeAddress: storeAddress, // ✅ now saving actual store address
         status: "ASSIGNED",
         assignedAt: new Date(),
         estimatedPickupTime: calculatePickupTime(),
@@ -4095,20 +4362,19 @@ app.put("/api/orders/:id/ready-for-pickup", async (req, res) => {
       orderStatus: updatedOrder.orderStatus,
       deliveryId: delivery.id,
     });
-    
+
     io.to(`store-${updatedOrder.storeId}`).emit("store-order-updated", {
       orderId: updatedOrder.id,
       orderStatus: updatedOrder.orderStatus,
       deliveryId: delivery.id,
     });
-    
+
     io.to(`delivery-${delivery.id}`).emit("delivery-assigned", {
       orderId: updatedOrder.id,
       deliveryId: delivery.id,
       deliveryPartnerId: availablePartner.id,
       partnerName: availablePartner.partner.fullName,
     });
-    
 
     return res.json({
       order: updatedOrder,
