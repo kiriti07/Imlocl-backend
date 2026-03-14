@@ -217,6 +217,30 @@ function generateOrderNumber(prefix: string = "IML") {
   return `${prefix}-${y}${m}${d}-${rand}`;
 }
 
+async function ensureDeliveryPartnerProfile(partnerId: string, extras?: {
+  drivingLicense?: string | null;
+  vehicleNumber?: string | null;
+  vehicleType?: string | null;
+  vehicleModel?: string | null;
+}) {
+  const existing = await prisma.deliveryPartner.findUnique({
+    where: { partnerId },
+  });
+
+  if (existing) return existing;
+
+  return prisma.deliveryPartner.create({
+    data: {
+      partnerId,
+      drivingLicense: extras?.drivingLicense || "PENDING",
+      vehicleNumber: extras?.vehicleNumber || "PENDING",
+      vehicleType: extras?.vehicleType || "BIKE",
+      vehicleModel: extras?.vehicleModel || null,
+      isAvailable: true,
+    },
+  });
+}
+
 app.post("/api/orders", async (req, res) => {
   try {
     const {
@@ -1382,6 +1406,12 @@ app.post("/api/partners/register", async (req, res) => {
     const city = req.body.city ? s(req.body.city) : null;
     const experience = s(req.body.experience) || null;
 
+    // delivery extras
+    const drivingLicense = req.body.drivingLicense ? s(req.body.drivingLicense) : null;
+    const vehicleNumber = req.body.vehicleNumber ? s(req.body.vehicleNumber) : null;
+    const vehicleType = req.body.vehicleType ? s(req.body.vehicleType) : null;
+    const vehicleModel = req.body.vehicleModel ? s(req.body.vehicleModel) : null;
+
     if (!partnerType || !fullName || !phone) {
       return res.status(400).json({ message: "partnerType, fullName, phone are required" });
     }
@@ -1408,8 +1438,25 @@ app.post("/api/partners/register", async (req, res) => {
       },
     });
 
+    // ✅ create deliveryPartner row also for delivery users
+    if (role === PartnerRole.DELIVERY) {
+      await ensureDeliveryPartnerProfile(created.id, {
+        drivingLicense,
+        vehicleNumber,
+        vehicleType,
+        vehicleModel,
+      });
+    }
+
     const fetched = await prisma.partner.findUnique({
       where: { id: created.id },
+      include: {
+        deliveryPartner: true,
+        designerProfile: true,
+        meatShop: true,
+        organicShop: true,
+        laundryShop: true,
+      },
     });
 
     return res.json({
@@ -1420,7 +1467,7 @@ app.post("/api/partners/register", async (req, res) => {
         fetchedRoleFromDb: fetched?.role ?? null,
         source: "src/server.ts",
       },
-      partner: created,
+      partner: fetched,
     });
   } catch (e: any) {
     console.error("REGISTER ERROR:", e);
@@ -1466,6 +1513,11 @@ app.post("/api/auth/login", async (req, res) => {
       data: { token },
     });
 
+    // ✅ backfill missing deliveryPartner row for old users
+    if (partner.role === PartnerRole.DELIVERY) {
+      await ensureDeliveryPartnerProfile(partner.id);
+    }
+
     const updatedPartner = await prisma.partner.findUnique({
       where: { id: partner.id },
       include: {
@@ -1502,6 +1554,11 @@ app.get("/api/auth/me", async (req, res) => {
   try {
     const auth = await authRequired(req);
     if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    // ✅ backfill missing deliveryPartner row for old users
+    if (auth.partner.role === PartnerRole.DELIVERY) {
+      await ensureDeliveryPartnerProfile(auth.partner.id);
+    }
 
     const partner = await prisma.partner.findUnique({
       where: { id: auth.partner.id },
