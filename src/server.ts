@@ -94,6 +94,13 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("join-delivery-partner-room", (deliveryPartnerId: string) => {
+    if (deliveryPartnerId) {
+      socket.join(`delivery-partner-${deliveryPartnerId}`);
+      console.log(`Socket ${socket.id} joined delivery-partner-${deliveryPartnerId}`);
+    }
+  });
+
   socket.on("location-update", (data) => {
     const { deliveryId, lat, lng, timestamp } = data || {};
     if (!deliveryId) return;
@@ -4369,11 +4376,12 @@ app.put("/api/orders/:id/ready-for-pickup", async (req, res) => {
       deliveryId: delivery.id,
     });
 
-    io.to(`delivery-${delivery.id}`).emit("delivery-assigned", {
+    io.to(`delivery-partner-${availablePartner.id}`).emit("delivery-assigned", {
       orderId: updatedOrder.id,
       deliveryId: delivery.id,
       deliveryPartnerId: availablePartner.id,
       partnerName: availablePartner.partner.fullName,
+      status: delivery.status,
     });
 
     return res.json({
