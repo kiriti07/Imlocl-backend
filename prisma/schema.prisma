@@ -307,6 +307,9 @@ model Delivery {
   currentLat            Float?
   currentLng            Float?
   lastLocationUpdate    DateTime?
+  pickupOtp             String?
+  pickupOtpVerified     Boolean         @default(false)
+  pickupOtpVerifiedAt   DateTime?
   items                 Json
   totalAmount           Float
   partner               DeliveryPartner @relation(fields: [partnerId], references: [id], onDelete: Cascade)

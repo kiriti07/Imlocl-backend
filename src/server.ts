@@ -159,6 +159,10 @@ function genToken() {
   return crypto.randomUUID();
 }
 
+function generate4DigitOtp() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
 async function customerAuthRequired(req: express.Request) {
   const token = parseBearerToken(req);
   if (!token) return { ok: false as const, status: 401, message: "Missing token" };
@@ -2316,8 +2320,10 @@ app.put("/api/deliveries/:id/status", async (req, res) => {
       updateData.arrivedAtStoreAt = new Date();
     }
 
-    if (status === "PICKED_UP") {
-      updateData.pickedUpAt = new Date();
+    if (status === "PICKED_UP" && !(existingDelivery as any).pickupOtpVerified) {
+      return res.status(400).json({
+        message: "Pickup OTP must be verified before marking order as picked up",
+      });
     }
 
     if (status === "DELIVERED") {
@@ -2674,6 +2680,8 @@ app.get("/api/delivery-partner/me/deliveries", async (req, res) => {
     const deliveriesWithOrderNumber = deliveries.map((delivery) => ({
       ...delivery,
       orderNumber: delivery.orderId ? orderMap.get(delivery.orderId) ?? null : null,
+      pickupOtp: (delivery as any).pickupOtp ?? null,
+      pickupOtpVerified: Boolean((delivery as any).pickupOtpVerified),
     }));
 
     return res.json({ deliveries: deliveriesWithOrderNumber });
@@ -2729,10 +2737,80 @@ app.get("/api/delivery-partner/me/deliveries/:id", async (req, res) => {
       delivery: {
         ...delivery,
         orderNumber,
+        pickupOtp: (delivery as any).pickupOtp ?? null,
+        pickupOtpVerified: Boolean((delivery as any).pickupOtpVerified),
       },
     });
   } catch (e: any) {
     console.error("GET MY DELIVERY DETAIL ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+app.put("/api/deliveries/:id/verify-pickup-otp", async (req, res) => {
+  try {
+    const id = s(req.params.id);
+    const otp = s(req.body.otp);
+
+    const gate = await requireDeliveryPartnerApproved(req);
+    if (!gate.ok) {
+      return res.status(gate.status).json({ message: gate.message });
+    }
+
+    const deliveryPartner = await prisma.deliveryPartner.findUnique({
+      where: { partnerId: gate.partner.id },
+    });
+
+    if (!deliveryPartner) {
+      return res.status(404).json({ message: "Delivery partner profile not found" });
+    }
+
+    const delivery = await prisma.delivery.findFirst({
+      where: {
+        id,
+        partnerId: deliveryPartner.id,
+      },
+    });
+
+    if (!delivery) {
+      return res.status(404).json({ message: "Delivery not found" });
+    }
+
+    if (!(delivery as any).pickupOtp) {
+      return res.status(400).json({ message: "Pickup OTP not generated yet" });
+    }
+
+    if ((delivery as any).pickupOtp !== otp) {
+      return res.status(400).json({ message: "Invalid pickup OTP" });
+    }
+
+    const updateOtpData: any = {
+      pickupOtpVerified: true,
+      pickupOtpVerifiedAt: new Date(),
+    };
+    
+    const updated = await prisma.delivery.update({
+      where: { id },
+      data: updateOtpData,
+    });    
+
+    io.to(`delivery-${updated.id}`).emit("delivery-pickup-otp-verified", {
+      deliveryId: updated.id,
+      pickupOtpVerified: true,
+    });
+
+    io.to(`store-${updated.storeId}`).emit("store-order-updated", {
+      orderId: updated.orderId,
+      pickupOtpVerified: true,
+      deliveryId: updated.id,
+    });
+
+    return res.json({
+      message: "Pickup OTP verified successfully",
+      delivery: updated,
+    });
+  } catch (e: any) {
+    console.error("VERIFY PICKUP OTP ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
@@ -4583,27 +4661,33 @@ app.put("/api/orders/:id/ready-for-pickup", async (req, res) => {
       storeAddress = organicShop?.address ?? null;
     }
 
+    const pickupOtp = generate4DigitOtp();
+
+    const deliveryCreateData: any = {
+      orderId: order.id,
+      partnerId: availablePartner.id,
+      customerName: order.customerName,
+      customerPhone: order.customerPhone,
+      customerAddress: order.customerAddress,
+      storeId: order.storeId,
+      storeName: order.storeName,
+      storeAddress: storeAddress,
+      status: "ASSIGNED",
+      assignedAt: new Date(),
+      estimatedPickupTime: calculatePickupTime(),
+      estimatedDeliveryTime: calculateDeliveryTime(),
+      pickupOtp,
+      pickupOtpVerified: false,
+      items: order.items,
+      totalAmount: Number(order.totalAmount),
+    };
+    
     const delivery = await prisma.delivery.create({
-      data: {
-        orderId: order.id,
-        partnerId: availablePartner.id,
-        customerName: order.customerName,
-        customerPhone: order.customerPhone,
-        customerAddress: order.customerAddress,
-        storeId: order.storeId,
-        storeName: order.storeName,
-        storeAddress: storeAddress, // ✅ now saving actual store address
-        status: "ASSIGNED",
-        assignedAt: new Date(),
-        estimatedPickupTime: calculatePickupTime(),
-        estimatedDeliveryTime: calculateDeliveryTime(),
-        items: order.items,
-        totalAmount: Number(order.totalAmount),
-      },
+      data: deliveryCreateData,
       include: {
         partner: { include: { partner: true } },
       },
-    });
+    });    
 
     await prisma.deliveryPartner.update({
       where: { id: availablePartner.id },
