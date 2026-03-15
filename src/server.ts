@@ -1401,12 +1401,37 @@ app.get("/api/organicshop/orders", async (req, res) => {
       orderBy: { createdAt: "desc" },
     });
 
-    return res.json({ orders });
+    const orderIds = orders.map((o) => o.id);
+
+    const deliveries: any[] = orderIds.length
+      ? ((await prisma.delivery.findMany({
+          where: {
+            orderId: { in: orderIds },
+          },
+        })) as any[])
+      : [];
+
+    const deliveryMap = new Map(deliveries.map((d: any) => [d.orderId, d]));
+
+    const ordersWithDelivery = orders.map((order: any) => {
+      const delivery = deliveryMap.get(order.id);
+
+      return {
+        ...order,
+        deliveryId: delivery?.id ?? null,
+        deliveryStatus: delivery?.status ?? null,
+        pickupOtp: delivery?.pickupOtp ?? null,
+        pickupOtpVerified: Boolean(delivery?.pickupOtpVerified),
+      };
+    });
+
+    return res.json({ orders: ordersWithDelivery });
   } catch (e: any) {
     console.error("ORGANIC SHOP ORDERS ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
+
 
 // ✅ REGISTER
 app.post("/api/partners/register", async (req, res) => {
@@ -1638,7 +1663,31 @@ app.get("/api/meatshop/orders", async (req, res) => {
       orderBy: { createdAt: "desc" },
     });
 
-    return res.json({ orders });
+    const orderIds = orders.map((o) => o.id);
+
+    const deliveries: any[] = orderIds.length
+      ? ((await prisma.delivery.findMany({
+          where: {
+            orderId: { in: orderIds },
+          },
+        })) as any[])
+      : [];
+
+    const deliveryMap = new Map(deliveries.map((d: any) => [d.orderId, d]));
+
+    const ordersWithDelivery = orders.map((order: any) => {
+      const delivery = deliveryMap.get(order.id);
+
+      return {
+        ...order,
+        deliveryId: delivery?.id ?? null,
+        deliveryStatus: delivery?.status ?? null,
+        pickupOtp: delivery?.pickupOtp ?? null,
+        pickupOtpVerified: Boolean(delivery?.pickupOtpVerified),
+      };
+    });
+
+    return res.json({ orders: ordersWithDelivery });
   } catch (e: any) {
     console.error("MEAT SHOP ORDERS ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
@@ -2680,9 +2729,8 @@ app.get("/api/delivery-partner/me/deliveries", async (req, res) => {
     const deliveriesWithOrderNumber = deliveries.map((delivery) => ({
       ...delivery,
       orderNumber: delivery.orderId ? orderMap.get(delivery.orderId) ?? null : null,
-      pickupOtp: (delivery as any).pickupOtp ?? null,
       pickupOtpVerified: Boolean((delivery as any).pickupOtpVerified),
-    }));
+    }));    
 
     return res.json({ deliveries: deliveriesWithOrderNumber });
   } catch (e: any) {
@@ -2737,10 +2785,9 @@ app.get("/api/delivery-partner/me/deliveries/:id", async (req, res) => {
       delivery: {
         ...delivery,
         orderNumber,
-        pickupOtp: (delivery as any).pickupOtp ?? null,
         pickupOtpVerified: Boolean((delivery as any).pickupOtpVerified),
       },
-    });
+    });    
   } catch (e: any) {
     console.error("GET MY DELIVERY DETAIL ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
