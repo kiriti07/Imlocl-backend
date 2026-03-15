@@ -2271,12 +2271,43 @@ app.post("/api/deliveries", async (req, res) => {
 // ✅ Update delivery status (called by delivery partner)
 app.put("/api/deliveries/:id/status", async (req, res) => {
   try {
-    const id = req.params.id;
-    const { status } = req.body;
+    const id = s(req.params.id);
+    const status = s(req.body.status).toUpperCase();
 
     const gate = await requireDeliveryPartnerApproved(req);
     if (!gate.ok) {
       return res.status(gate.status).json({ message: gate.message });
+    }
+
+    const deliveryPartner = await prisma.deliveryPartner.findUnique({
+      where: { partnerId: gate.partner.id },
+    });
+
+    if (!deliveryPartner) {
+      return res.status(404).json({ message: "Delivery partner profile not found" });
+    }
+
+    const existingDelivery = await prisma.delivery.findFirst({
+      where: {
+        id,
+        partnerId: deliveryPartner.id,
+      },
+    });
+
+    if (!existingDelivery) {
+      return res.status(404).json({ message: "Delivery not found" });
+    }
+
+    const allowedStatuses = [
+      "ARRIVED_AT_STORE",
+      "PICKED_UP",
+      "DELIVERED",
+      "FAILED",
+      "CANCELLED",
+    ];
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ message: "Invalid delivery status" });
     }
 
     const updateData: any = { status };
@@ -2293,73 +2324,170 @@ app.put("/api/deliveries/:id/status", async (req, res) => {
       updateData.deliveredAt = new Date();
     }
 
-    const updated = await prisma.delivery.update({
-      where: { id },
-      data: updateData,
+    const result = await prisma.$transaction(async (tx) => {
+      const updatedDelivery = await tx.delivery.update({
+        where: { id },
+        data: updateData,
+      });
+
+      let updatedOrder: any = null;
+
+      if (updatedDelivery.orderId) {
+        if (status === "ARRIVED_AT_STORE") {
+          updatedOrder = await tx.customerOrder.update({
+            where: { id: updatedDelivery.orderId },
+            data: {
+              orderStatus: "RIDER_ARRIVED_AT_STORE",
+              statusHistory: {
+                create: {
+                  status: "RIDER_ARRIVED_AT_STORE",
+                  note: "Delivery partner arrived at the store",
+                  actorType: "DELIVERY_PARTNER",
+                  actorId: gate.partner.id,
+                },
+              },
+            },
+          });
+        }
+
+        if (status === "PICKED_UP") {
+          updatedOrder = await tx.customerOrder.update({
+            where: { id: updatedDelivery.orderId },
+            data: {
+              orderStatus: "PICKED_UP",
+              statusHistory: {
+                create: {
+                  status: "PICKED_UP",
+                  note: "Order is picked up and on the way to deliver",
+                  actorType: "DELIVERY_PARTNER",
+                  actorId: gate.partner.id,
+                },
+              },
+            },
+          });
+        }
+
+        if (status === "DELIVERED") {
+          updatedOrder = await tx.customerOrder.update({
+            where: { id: updatedDelivery.orderId },
+            data: {
+              orderStatus: "COMPLETED",
+              deliveredAt: new Date(),
+              statusHistory: {
+                create: {
+                  status: "COMPLETED",
+                  note: "Order completed and delivered to customer",
+                  actorType: "DELIVERY_PARTNER",
+                  actorId: gate.partner.id,
+                },
+              },
+            },
+          });
+
+          await tx.deliveryPartner.update({
+            where: { id: deliveryPartner.id },
+            data: {
+              currentOrders: {
+                decrement: 1,
+              },
+            },
+          });
+        }
+      }
+
+      return { updatedDelivery, updatedOrder };
     });
 
-    /* -----------------------------------------
-       UPDATE ORDER STATUS BASED ON DELIVERY
-    ------------------------------------------*/
+    const { updatedDelivery, updatedOrder } = result;
 
-    if (status === "PICKED_UP") {
-      await prisma.customerOrder.update({
-        where: { deliveryId: id },
-        data: {
-          orderStatus: "PICKED_UP",
-          statusHistory: {
-            create: {
-              status: "PICKED_UP",
-              note: "Order picked up by delivery partner",
-              actorType: "DELIVERY_PARTNER",
-              actorId: gate.partner.id,
-            },
-          },
-        },
-      });
-    }
-
-    if (status === "DELIVERED") {
-      await prisma.customerOrder.update({
-        where: { deliveryId: id },
-        data: {
-          orderStatus: "DELIVERED",
-          deliveredAt: new Date(),
-          statusHistory: {
-            create: {
-              status: "DELIVERED",
-              note: "Order delivered to customer",
-              actorType: "DELIVERY_PARTNER",
-              actorId: gate.partner.id,
-            },
-          },
-        },
-      });
-    }
-
-    io.to(`delivery-${id}`).emit("delivery-status-updated", {
-      deliveryId: id,
-      status,
+    io.to(`delivery-${updatedDelivery.id}`).emit("delivery-status-updated", {
+      deliveryId: updatedDelivery.id,
+      status: updatedDelivery.status,
+      orderId: updatedDelivery.orderId,
+      message:
+        status === "PICKED_UP"
+          ? "Order is picked up and on the way to deliver"
+          : status === "DELIVERED"
+          ? "Order completed successfully"
+          : undefined,
     });
 
-    if (updated?.orderId) {
-      io.to(`order-${updated.orderId}`).emit("order-status-updated", {
-        orderId: updated.orderId,
-        orderStatus:
+    if (updatedDelivery.orderId) {
+      io.to(`order-${updatedDelivery.orderId}`).emit("order-status-updated", {
+        orderId: updatedDelivery.orderId,
+        orderStatus: updatedOrder?.orderStatus || status,
+        deliveryStatus: updatedDelivery.status,
+        message:
           status === "PICKED_UP"
-            ? "PICKED_UP"
+            ? "Order is picked up and on the way to deliver"
             : status === "DELIVERED"
-            ? "DELIVERED"
-            : status,
+            ? "Order completed successfully"
+            : undefined,
       });
     }
 
-    return res.json(updated);
+    if (updatedDelivery.storeId) {
+      io.to(`store-${updatedDelivery.storeId}`).emit("store-order-updated", {
+        orderId: updatedDelivery.orderId,
+        orderStatus: updatedOrder?.orderStatus || status,
+        deliveryStatus: updatedDelivery.status,
+        storeCompleted: status === "PICKED_UP",
+      });
+    }
+
+    if (updatedDelivery.orderId) {
+      const order = await prisma.customerOrder.findUnique({
+        where: { id: updatedDelivery.orderId },
+        select: {
+          id: true,
+          customerPhone: true,
+        },
+      });
+
+      if (order?.customerPhone) {
+        const customer = await prisma.customer.findFirst({
+          where: { phone: order.customerPhone },
+          select: { id: true },
+        });
+
+        if (customer?.id) {
+          io.to(`customer-${customer.id}`).emit("customer-order-status-updated", {
+            orderId: updatedDelivery.orderId,
+            orderStatus: updatedOrder?.orderStatus || status,
+            deliveryStatus: updatedDelivery.status,
+            title:
+              status === "PICKED_UP"
+                ? "Order Picked Up"
+                : status === "DELIVERED"
+                ? "Order Completed"
+                : "Order Update",
+            message:
+              status === "PICKED_UP"
+                ? "Order is picked up and on the way to deliver"
+                : status === "DELIVERED"
+                ? "Your order has been delivered successfully"
+                : `Order status updated to ${status}`,
+          });
+        }
+      }
+    }
+
+    return res.json({
+      message:
+        status === "PICKED_UP"
+          ? "Order picked up successfully"
+          : status === "DELIVERED"
+          ? "Order completed successfully"
+          : "Delivery status updated successfully",
+      delivery: updatedDelivery,
+      order: updatedOrder,
+    });
   } catch (e: any) {
     console.error("DELIVERY STATUS UPDATE ERROR:", e);
-    return res.status(500).json({ message: e.message });
+    return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
+
 
 // ✅ Get delivery details (for customer tracking)
 app.get("/api/deliveries/:id", async (req, res) => {
