@@ -297,6 +297,7 @@ model Delivery {
   storeAddress          String?
   status                DeliveryStatus
   assignedAt            DateTime?       @default(now())
+  arrivedAtStoreAt      DateTime?
   pickedUpAt            DateTime?
   deliveredAt           DateTime?
   estimatedPickupTime   DateTime?
