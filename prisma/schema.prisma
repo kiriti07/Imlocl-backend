@@ -617,6 +617,10 @@ model CustomerOrder {
   totalAmount       Decimal             @db.Decimal(10, 2)
   deliveryId        String?             @unique @db.Uuid
   deliveryPartnerId String?             @db.Uuid
+  isScheduled       Boolean             @default(false)
+  scheduledFor      DateTime?           @db.Timestamp(6)
+  scheduleSlot      String?
+  deliveryNote      String?
   placedAt          DateTime            @default(now()) @db.Timestamp(6)
   acceptedAt        DateTime?           @db.Timestamp(6)
   rejectedAt        DateTime?           @db.Timestamp(6)

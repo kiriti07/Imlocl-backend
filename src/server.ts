@@ -266,11 +266,13 @@ app.post("/api/orders", async (req, res) => {
       storeId,
       items = [],
       addressId,
-      customerLat,
-      customerLng,
       paymentMethod,
       couponCode,
       pricingSummary,
+      isScheduled,
+      scheduledFor,
+      scheduleSlot,
+      deliveryNote,
     } = req.body;
 
     if (!serviceType || !storeId || !Array.isArray(items) || items.length === 0) {
@@ -285,8 +287,6 @@ app.post("/api/orders", async (req, res) => {
     if (!auth.ok) {
       return res.status(auth.status).json({ message: auth.message });
     }
-
-    // const { addressId } = req.body;
 
     const selectedAddress = await prisma.customerAddress.findFirst({
       where: {
@@ -303,6 +303,7 @@ app.post("/api/orders", async (req, res) => {
     const storeType = normalizedServiceType === "MEAT" ? "MEAT" : "ORGANIC";
 
     let store: any = null;
+
     if (storeType === "MEAT") {
       store = await prisma.meatShop.findFirst({
         where: {
@@ -364,6 +365,7 @@ app.post("/api/orders", async (req, res) => {
       const dbItem = dbItems.find((x: any) => x.id === String(raw.itemId));
       const qty = Number(raw.quantity ?? 0);
       const price = Number(dbItem.price ?? 0);
+
       return {
         itemId: dbItem.id,
         itemName: dbItem.name,
@@ -377,8 +379,15 @@ app.post("/api/orders", async (req, res) => {
 
     const subtotal = normalizedItems.reduce((sum: number, x: any) => sum + x.lineTotal, 0);
 
-    const order = await prisma.$transaction(async (tx) => {
-      const createdOrder = await tx.customerOrder.create({
+    const scheduledFields = {
+      isScheduled: Boolean(isScheduled && scheduledFor),
+      scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
+      scheduleSlot: scheduleSlot ? String(scheduleSlot) : null,
+      deliveryNote: deliveryNote ? String(deliveryNote) : null,
+    };
+
+    const createdOrder = await prisma.$transaction(async (tx) => {
+      const orderRecord = await tx.customerOrder.create({
         data: {
           orderNumber: generateOrderNumber(),
           serviceType: normalizedServiceType,
@@ -405,6 +414,9 @@ app.post("/api/orders", async (req, res) => {
           lateNightFee: Number(pricingSummary?.lateNightFee ?? 0),
           discount: Number(pricingSummary?.discount ?? 0),
           totalAmount: Number(pricingSummary?.totalPayable ?? subtotal),
+
+          ...scheduledFields,
+
           items: {
             create: normalizedItems.map((x: any) => ({
               itemId: x.itemId,
@@ -416,10 +428,13 @@ app.post("/api/orders", async (req, res) => {
               imageUrl: x.imageUrl,
             })),
           },
+
           statusHistory: {
             create: {
               status: "PLACED",
-              note: "Order placed by customer with COD",
+              note: Boolean(isScheduled && scheduledFor)
+                ? `Scheduled order placed by customer for ${scheduleSlot || "selected slot"}`
+                : "Order placed by customer with COD",
               actorType: "CUSTOMER",
             },
           },
@@ -432,7 +447,7 @@ app.post("/api/orders", async (req, res) => {
 
       await tx.orderPayment.create({
         data: {
-          order_id: createdOrder.id,
+          order_id: orderRecord.id,
           payment_method: "COD",
           payment_gateway: null,
           transaction_id: null,
@@ -441,37 +456,57 @@ app.post("/api/orders", async (req, res) => {
         },
       });
 
-      return createdOrder;
+      return orderRecord;
     });
 
+    const freshOrderRaw = await prisma.customerOrder.findUnique({
+      where: { id: createdOrder.id },
+      include: {
+        items: true,
+        statusHistory: true,
+      },
+    });
+
+    if (!freshOrderRaw) {
+      return res.status(500).json({ message: "Failed to reload created order" });
+    }
+
+    const freshOrder: any = freshOrderRaw;
+
     io.to(`store-${store.id}`).emit("store-new-order", {
-      orderId: order.id,
-      orderNumber: order.orderNumber,
+      orderId: freshOrder.id,
+      orderNumber: freshOrder.orderNumber,
       storeId: store.id,
       storeName: store.shopName,
-      totalAmount: order.totalAmount,
-      paymentMethod: order.paymentMethod,
-      orderStatus: order.orderStatus,
-      createdAt: order.createdAt,
+      totalAmount: freshOrder.totalAmount,
+      paymentMethod: freshOrder.paymentMethod,
+      orderStatus: freshOrder.orderStatus,
+      createdAt: freshOrder.createdAt,
+      isScheduled: freshOrder.isScheduled,
+      scheduledFor: freshOrder.scheduledFor,
+      scheduleSlot: freshOrder.scheduleSlot,
+      deliveryNote: freshOrder.deliveryNote,
     });
 
     io.to(`customer-${auth.customer.id}`).emit("customer-order-created", {
-      orderId: order.id,
-      orderNumber: order.orderNumber,
-      orderStatus: order.orderStatus,
-      totalAmount: order.totalAmount,
-      createdAt: order.createdAt,
+      orderId: freshOrder.id,
+      orderNumber: freshOrder.orderNumber,
+      orderStatus: freshOrder.orderStatus,
+      totalAmount: freshOrder.totalAmount,
+      createdAt: freshOrder.createdAt,
+      isScheduled: freshOrder.isScheduled,
+      scheduledFor: freshOrder.scheduledFor,
+      scheduleSlot: freshOrder.scheduleSlot,
     });
 
-    io.to(`order-${order.id}`).emit("order-status-updated", {
-      orderId: order.id,
-      orderStatus: order.orderStatus,
+    io.to(`order-${freshOrder.id}`).emit("order-status-updated", {
+      orderId: freshOrder.id,
+      orderStatus: freshOrder.orderStatus,
     });
-
 
     return res.json({
       message: "COD order placed successfully",
-      order,
+      order: freshOrder,
     });
   } catch (e: any) {
     console.error("CREATE ORDER ERROR:", e);
@@ -4658,6 +4693,20 @@ app.put("/api/orders/:id/ready-for-pickup", async (req, res) => {
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
+    }
+    
+    const orderAny = order as any;
+
+    if (orderAny.isScheduled && orderAny.scheduledFor) {
+      const scheduledTime = new Date(orderAny.scheduledFor).getTime();
+      const now = Date.now();
+      const readyWindowMs = 45 * 60 * 1000;
+
+      if (now < scheduledTime - readyWindowMs) {
+        return res.status(400).json({
+          message: "This is a scheduled order. It can only be marked ready closer to the scheduled delivery time.",
+        });
+      }
     }
 
     const availablePartner = await prisma.deliveryPartner.findFirst({
