@@ -11,27 +11,30 @@ import { Server } from 'socket.io';
 import crypto from "crypto";
 import multer from "multer";
 import http from 'http';
-import { setupWebSocket } from './websocket';
+import { setupWebSocket, getDeliveryStatus } from "./websocket";
 import path from "path";
 import fs from "fs";
+import trackingRoutes from './routes/tracking';
+
 
 const app = express();
 const prisma = new PrismaClient();
 
 app.use(cors());
 app.use(express.json());
+app.use('/api', trackingRoutes);
 
 const PORT = Number(process.env.PORT || 8080);
 
-// After your app initialization, create HTTP server
 const server = http.createServer(app);
+const io = setupWebSocket(server);
 
-const io = new Server(server, {
-  cors: { origin: "http://localhost:8081" }
-});
+// const io = new Server(server, {
+//   cors: { origin: "http://localhost:8081" }
+// });
 
-// Track active deliveries
-const activeDeliveries = new Map();
+// // Track active deliveries
+// const activeDeliveries = new Map();
 
 process.on("uncaughtException", (err) => {
   console.error("UNCAUGHT EXCEPTION:", err);
@@ -63,59 +66,59 @@ const upload = multer({
 ensureContainerExists().catch(console.error);
 
 
-io.on("connection", (socket) => {
-  console.log("Socket connected:", socket.id);
+// io.on("connection", (socket) => {
+//   console.log("Socket connected:", socket.id);
 
-  socket.on("join-store-room", (storeId: string) => {
-    if (storeId) {
-      socket.join(`store-${storeId}`);
-      console.log(`Socket ${socket.id} joined store-${storeId}`);
-    }
-  });
+//   socket.on("join-store-room", (storeId: string) => {
+//     if (storeId) {
+//       socket.join(`store-${storeId}`);
+//       console.log(`Socket ${socket.id} joined store-${storeId}`);
+//     }
+//   });
 
-  socket.on("join-customer-room", (customerId: string) => {
-    if (customerId) {
-      socket.join(`customer-${customerId}`);
-      console.log(`Socket ${socket.id} joined customer-${customerId}`);
-    }
-  });
+//   socket.on("join-customer-room", (customerId: string) => {
+//     if (customerId) {
+//       socket.join(`customer-${customerId}`);
+//       console.log(`Socket ${socket.id} joined customer-${customerId}`);
+//     }
+//   });
 
-  socket.on("join-order-room", (orderId: string) => {
-    if (orderId) {
-      socket.join(`order-${orderId}`);
-      console.log(`Socket ${socket.id} joined order-${orderId}`);
-    }
-  });
+//   socket.on("join-order-room", (orderId: string) => {
+//     if (orderId) {
+//       socket.join(`order-${orderId}`);
+//       console.log(`Socket ${socket.id} joined order-${orderId}`);
+//     }
+//   });
 
-  socket.on("join-delivery-room", (deliveryId: string) => {
-    if (deliveryId) {
-      socket.join(`delivery-${deliveryId}`);
-      console.log(`Socket ${socket.id} joined delivery-${deliveryId}`);
-    }
-  });
+//   socket.on("join-delivery-room", (deliveryId: string) => {
+//     if (deliveryId) {
+//       socket.join(`delivery-${deliveryId}`);
+//       console.log(`Socket ${socket.id} joined delivery-${deliveryId}`);
+//     }
+//   });
 
-  socket.on("join-delivery-partner-room", (deliveryPartnerId: string) => {
-    if (deliveryPartnerId) {
-      socket.join(`delivery-partner-${deliveryPartnerId}`);
-      console.log(`Socket ${socket.id} joined delivery-partner-${deliveryPartnerId}`);
-    }
-  });
+//   socket.on("join-delivery-partner-room", (deliveryPartnerId: string) => {
+//     if (deliveryPartnerId) {
+//       socket.join(`delivery-partner-${deliveryPartnerId}`);
+//       console.log(`Socket ${socket.id} joined delivery-partner-${deliveryPartnerId}`);
+//     }
+//   });
 
-  socket.on("location-update", (data) => {
-    const { deliveryId, lat, lng, timestamp } = data || {};
-    if (!deliveryId) return;
+//   socket.on("location-update", (data) => {
+//     const { deliveryId, lat, lng, timestamp } = data || {};
+//     if (!deliveryId) return;
 
-    io.to(`delivery-${deliveryId}`).emit("partner-location", {
-      lat,
-      lng,
-      timestamp,
-    });
-  });
+//     io.to(`delivery-${deliveryId}`).emit("partner-location", {
+//       lat,
+//       lng,
+//       timestamp,
+//     });
+//   });
 
-  socket.on("disconnect", () => {
-    console.log("Socket disconnected:", socket.id);
-  });
-});
+//   socket.on("disconnect", () => {
+//     console.log("Socket disconnected:", socket.id);
+//   });
+// });
 
 
 function calculatePickupTime() {
@@ -141,9 +144,9 @@ async function notifyPartner(_partnerId: string, _delivery: any) {
   console.log("notifyPartner placeholder called");
 }
 
-function getDeliveryStatus(_deliveryId: string) {
-  return null;
-}
+// function getDeliveryStatus(_deliveryId: string) {
+//   return null;
+// }
 // ----------------------
 // helpers
 // ----------------------
