@@ -120,6 +120,63 @@ ensureContainerExists().catch(console.error);
 //   });
 // });
 
+io.on("connection", (socket) => {
+  console.log("Socket connected:", socket.id);
+
+  socket.on("join-store-room", (storeId: string) => {
+    if (!storeId) return;
+    socket.join(`store-${storeId}`);
+    console.log(`Socket ${socket.id} joined store-${storeId}`);
+  });
+
+  socket.on("join-customer-room", (customerId: string) => {
+    if (!customerId) return;
+    socket.join(`customer-${customerId}`);
+    console.log(`Socket ${socket.id} joined customer-${customerId}`);
+  });
+
+  socket.on("join-order-room", (orderId: string) => {
+    if (!orderId) return;
+    socket.join(`order-${orderId}`);
+    console.log(`Socket ${socket.id} joined order-${orderId}`);
+  });
+
+  socket.on("join-delivery-room", (deliveryId: string) => {
+    if (!deliveryId) return;
+    socket.join(`delivery-${deliveryId}`);
+    console.log(`Socket ${socket.id} joined delivery-${deliveryId}`);
+  });
+
+  socket.on("join-delivery-partner-room", (deliveryPartnerId: string) => {
+    if (!deliveryPartnerId) return;
+    socket.join(`delivery-partner-${deliveryPartnerId}`);
+    console.log(`Socket ${socket.id} joined delivery-partner-${deliveryPartnerId}`);
+  });
+
+  socket.on("leave-delivery-room", (deliveryId: string) => {
+    if (!deliveryId) return;
+    socket.leave(`delivery-${deliveryId}`);
+    console.log(`Socket ${socket.id} left delivery-${deliveryId}`);
+  });
+
+  socket.on("location-update", (data) => {
+    const { deliveryId, lat, lng, timestamp, status } = data || {};
+    if (!deliveryId || typeof lat !== "number" || typeof lng !== "number") return;
+
+    io.to(`delivery-${deliveryId}`).emit("partner-location", {
+      lat,
+      lng,
+      timestamp: timestamp || new Date().toISOString(),
+      status: status || null,
+    });
+
+    console.log(`Live location for delivery ${deliveryId}: ${lat}, ${lng}`);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("Socket disconnected:", socket.id);
+  });
+});
 
 function calculatePickupTime() {
   const dt = new Date();

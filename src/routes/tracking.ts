@@ -64,14 +64,31 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
     const storeLocation = await resolveAddress(delivery.storeAddress);
     const customerLocation = await resolveAddress(delivery.customerAddress);
 
+    const partnerLat =
+    typeof (liveTracking as any)?.partnerLocation?.lat === 'number'
+        ? (liveTracking as any).partnerLocation.lat
+        : typeof (liveTracking as any)?.lat === 'number'
+        ? (liveTracking as any).lat
+        : null;
+
+    const partnerLng =
+    typeof (liveTracking as any)?.partnerLocation?.lng === 'number'
+        ? (liveTracking as any).partnerLocation.lng
+        : typeof (liveTracking as any)?.lng === 'number'
+        ? (liveTracking as any).lng
+        : null;
+
+    const partnerTimestamp =
+    (liveTracking as any)?.partnerLocation?.timestamp ||
+    (liveTracking as any)?.timestamp ||
+    null;
+
     const partnerLocation =
-      liveTracking?.partnerLocation &&
-      typeof liveTracking.partnerLocation.lat === 'number' &&
-      typeof liveTracking.partnerLocation.lng === 'number'
+    partnerLat !== null && partnerLng !== null
         ? {
-            latitude: liveTracking.partnerLocation.lat,
-            longitude: liveTracking.partnerLocation.lng,
-          }
+            latitude: partnerLat,
+            longitude: partnerLng,
+        }
         : null;
 
     let route: LatLng[] = [];
@@ -129,7 +146,7 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
       route,
       etaMinutes,
       distanceKm,
-      liveTimestamp: liveTracking?.partnerLocation?.timestamp || null,
+      liveTimestamp: partnerTimestamp,
     });
   } catch (error: any) {
     console.error('TRACKING ROUTE ERROR:', error);
