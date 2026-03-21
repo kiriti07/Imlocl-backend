@@ -62,7 +62,8 @@ jobs:
             --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
             --secrets \
               database-url='${{ secrets.DATABASE_URL }}' \
-              azure-storage-connstr='DefaultEndpointsProtocol=https;AccountName=imlocldev;AccountKey=${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }};EndpointSuffix=core.windows.net'
+              azure-storage-connstr='DefaultEndpointsProtocol=https;AccountName=imlocldev;AccountKey=${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }};EndpointSuffix=core.windows.net' \
+              google-maps-api-key='${{ secrets.GOOGLE_MAPS_API_KEY }}'
 
       - name: Run Prisma migrations using built image
         run: |
@@ -80,6 +81,7 @@ jobs:
             --set-env-vars \
               DATABASE_URL=secretref:database-url \
               AZURE_STORAGE_CONNECTION_STRING=secretref:azure-storage-connstr \
+              GOOGLE_MAPS_API_KEY=secretref:google-maps-api-key \
               AZURE_STORAGE_CONTAINER_NAME=images \
               AZURE_STORAGE_ACCOUNT_NAME=imlocldev \
               NODE_ENV=production \
