@@ -135,7 +135,7 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
     let etaMinutes: number | null = null;
     let distanceKm: number | null = null;
 
-    const currentStatus = String(liveTracking?.status || delivery.status || '');
+    const currentStatus = String(liveTracking?.status || delivery.status || '').toUpperCase();
 
     if (partnerLocation) {
       const goingToStore = [
@@ -145,8 +145,7 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
         'ARRIVED_AT_STORE',
       ].includes(currentStatus);
 
-      const destination =
-        goingToStore && storeLocation ? storeLocation : customerLocation;
+      const destination = goingToStore && storeLocation ? storeLocation : customerLocation;
 
       if (destination) {
         try {
@@ -168,6 +167,7 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
     }
 
     console.log('TRACKING DEBUG deliveryId:', deliveryId);
+    console.log('TRACKING DEBUG status:', currentStatus);
     console.log('TRACKING DEBUG storeLocation:', storeLocation);
     console.log('TRACKING DEBUG customerLocation:', customerLocation);
     console.log('TRACKING DEBUG partnerLocation:', partnerLocation);
@@ -180,7 +180,7 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
         id: delivery.id,
         orderId: delivery.orderId,
         partnerId: delivery.partnerId,
-        status: liveTracking?.status || delivery.status,
+        status: currentStatus,
         storeId: delivery.storeId,
         storeName: delivery.storeName,
         storeAddress: delivery.storeAddress,
