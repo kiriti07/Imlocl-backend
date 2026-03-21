@@ -86,6 +86,14 @@ jobs:
               AZURE_STORAGE_ACCOUNT_NAME=imlocldev \
               NODE_ENV=production \
               PORT=8080
+      
+      - name: Verify GOOGLE_MAPS_API_KEY exists in Container App
+        run: |
+          az containerapp show \
+            --name "${{ secrets.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --query "properties.template.containers[0].env" \
+            -o table
 
       - name: Wait briefly for revision startup
         run: sleep 20
