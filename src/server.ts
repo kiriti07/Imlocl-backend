@@ -15,10 +15,11 @@ import { setupWebSocket, getDeliveryStatus } from "./websocket";
 import path from "path";
 import fs from "fs";
 import trackingRoutes from './routes/tracking';
-
+import { GeocodingService } from './utils/geocoding';
 
 const app = express();
 const prisma = new PrismaClient();
+const geocoder = GeocodingService.getInstance();
 
 app.use(cors());
 app.use(express.json());
@@ -239,6 +240,26 @@ app.post("/api/orders", async (req, res) => {
       return res.status(400).json({ message: "Valid address is required" });
     }
 
+    // ✅ ENHANCED: Geocode customer address if missing
+    let customerLat = selectedAddress.lat;
+    let customerLng = selectedAddress.lng;
+    
+    if (!customerLat || !customerLng) {
+      console.log(`📍 Geocoding customer address: ${selectedAddress.fullAddress}`);
+      const coords = await geocoder.geocodeAddress(selectedAddress.fullAddress);
+      if (coords) {
+        customerLat = coords.latitude;
+        customerLng = coords.longitude;
+        console.log(`✅ Geocoded: ${customerLat}, ${customerLng}`);
+        
+        // Save to address for future use
+        await prisma.customerAddress.update({
+          where: { id: selectedAddress.id },
+          data: { lat: customerLat, lng: customerLng }
+        });
+      }
+    }
+
     const normalizedServiceType = String(serviceType).trim().toUpperCase();
     const storeType = normalizedServiceType === "MEAT" ? "MEAT" : "ORGANIC";
 
@@ -274,6 +295,26 @@ app.post("/api/orders", async (req, res) => {
 
     if (!store) {
       return res.status(404).json({ message: "Store not found or currently closed" });
+    }
+
+    // ✅ ENHANCED: Ensure store has coordinates
+    if ((!store.lat || !store.lng) && store.address) {
+      console.log(`📍 Geocoding store address: ${store.address}`);
+      const coords = await geocoder.geocodeAddress(store.address);
+      if (coords) {
+        if (storeType === "MEAT") {
+          await prisma.meatShop.update({
+            where: { id: store.id },
+            data: { lat: coords.latitude, lng: coords.longitude }
+          });
+        } else {
+          await prisma.organicShop.update({
+            where: { id: store.id },
+            data: { lat: coords.latitude, lng: coords.longitude }
+          });
+        }
+        console.log(`✅ Store geocoded: ${coords.latitude}, ${coords.longitude}`);
+      }
     }
 
     const itemIds = items.map((x: any) => String(x.itemId));
@@ -337,8 +378,8 @@ app.post("/api/orders", async (req, res) => {
           customerName: auth.customer.fullName,
           customerPhone: auth.customer.phone,
           customerAddress: selectedAddress.fullAddress,
-          customerLat: selectedAddress.lat ?? null,
-          customerLng: selectedAddress.lng ?? null,
+          customerLat: customerLat, // ✅ NOW HAS COORDINATES
+          customerLng: customerLng, // ✅ NOW HAS COORDINATES
           paymentMethod: "COD",
           paymentStatus: "PENDING_CASH_COLLECTION",
           orderStatus: "PLACED",
@@ -447,6 +488,10 @@ app.post("/api/orders", async (req, res) => {
     return res.json({
       message: "COD order placed successfully",
       order: freshOrder,
+      geocoding: {
+        customer: { lat: customerLat, lng: customerLng },
+        store: { lat: store.lat, lng: store.lng }
+      }
     });
   } catch (e: any) {
     console.error("CREATE ORDER ERROR:", e);
