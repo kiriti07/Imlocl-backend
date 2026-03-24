@@ -571,18 +571,20 @@ model Customer {
 }
 
 model CustomerAddress {
-  id           String    @id @default(uuid())
-  customerId   String
-  label        String?
-  fullAddress  String
-  city         String?
-  lat          Float?
-  lng          Float?
-  isDefault    Boolean   @default(false)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id                   String    @id @default(uuid())
+  customerId           String
+  label                String?
+  fullAddress          String
+  city                 String?
+  lat                  Float?
+  lng                  Float?
+  landmark             String?
+  deliveryInstructions String?
+  isDefault            Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  customer     Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customer             Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@index([customerId])
   @@map("CustomerAddress")

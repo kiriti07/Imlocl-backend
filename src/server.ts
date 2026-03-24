@@ -682,6 +682,10 @@ app.post("/api/customers/register", async (req, res) => {
     const city = req.body.city ? s(req.body.city) : null;
     const lat = asFloat(req.body.lat);
     const lng = asFloat(req.body.lng);
+    const landmark = req.body.landmark ? s(req.body.landmark) : null;
+    const deliveryInstructions = req.body.deliveryInstructions
+      ? s(req.body.deliveryInstructions)
+      : null;
 
     if (!fullName || !phone || !password) {
       return res.status(400).json({
@@ -709,14 +713,16 @@ app.post("/api/customers/register", async (req, res) => {
         token,
         addresses: fullAddress
           ? {
-              create: {
-                label: addressLabel,
-                fullAddress,
-                city,
-                lat,
-                lng,
-                isDefault: true,
-              },
+            create: {
+              label: addressLabel,
+              fullAddress,
+              city,
+              lat,
+              lng,
+              landmark,
+              deliveryInstructions,
+              isDefault: true,
+            },
             }
           : undefined,
       },
@@ -815,10 +821,22 @@ app.post("/api/customers/addresses", async (req, res) => {
     const city = req.body.city ? s(req.body.city) : null;
     const lat = asFloat(req.body.lat);
     const lng = asFloat(req.body.lng);
+    const landmark = req.body.landmark ? s(req.body.landmark) : null;
+    const deliveryInstructions = req.body.deliveryInstructions
+      ? s(req.body.deliveryInstructions)
+      : null;
     const isDefault = Boolean(req.body.isDefault);
 
     if (!fullAddress) {
-      return res.status(400).json({ message: "fullAddress is required" });
+      return res.status(400).json({ error: "fullAddress is required" });
+    }
+
+    if (lat === null || lat < -90 || lat > 90) {
+      return res.status(400).json({ error: "Valid lat is required" });
+    }
+
+    if (lng === null || lng < -180 || lng > 180) {
+      return res.status(400).json({ error: "Valid lng is required" });
     }
 
     if (isDefault) {
@@ -841,16 +859,21 @@ app.post("/api/customers/addresses", async (req, res) => {
         city,
         lat,
         lng,
+        landmark,
+        deliveryInstructions,
         isDefault,
       },
     });
 
-    return res.json({ address });
+    return res.status(201).json({ address });
   } catch (e: any) {
     console.error("CUSTOMER ADDRESS CREATE ERROR:", e);
-    return res.status(500).json({ message: e?.message ?? "Server error" });
+    return res.status(500).json({
+      error: e?.message ?? "Server error",
+    });
   }
 });
+
 
 // List customer addresses
 app.get("/api/customers/addresses", async (req, res) => {
@@ -871,6 +894,7 @@ app.get("/api/customers/addresses", async (req, res) => {
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
+
 
 // ----------------------
 // ORGANIC helpers
