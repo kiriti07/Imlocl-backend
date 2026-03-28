@@ -16,6 +16,7 @@ import path from "path";
 import fs from "fs";
 import trackingRoutes from './routes/tracking';
 import { GeocodingService } from './utils/geocoding';
+import otpRoutes from './routes/otp';
 
 const app = express();
 const prisma = new PrismaClient();
@@ -24,6 +25,7 @@ const geocoder = GeocodingService.getInstance();
 app.use(cors());
 app.use(express.json());
 app.use('/api', trackingRoutes);
+app.use('/api/otp', otpRoutes);
 
 const PORT = Number(process.env.PORT || 8080);
 
