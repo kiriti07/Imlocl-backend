@@ -24,6 +24,18 @@ const geocoder = GeocodingService.getInstance();
 
 app.use(cors());
 app.use(express.json());
+
+app.use((req, res, next) => {
+  const start = Date.now();
+
+  res.on("finish", () => {
+    const ms = Date.now() - start;
+    console.log(`[REQ] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${ms}ms)`);
+  });
+
+  next();
+});
+
 app.use('/api', trackingRoutes);
 app.use('/api/otp', otpRoutes);
 
@@ -109,9 +121,35 @@ function generate4DigitOtp() {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
-async function customerAuthRequired(req: express.Request) {
+async function customerAuthRequiredBasic(req: express.Request) {
   const token = parseBearerToken(req);
-  if (!token) return { ok: false as const, status: 401, message: "Missing token" };
+  if (!token) {
+    return { ok: false as const, status: 401, message: "Missing token" };
+  }
+
+  const customer = await prisma.customer.findFirst({
+    where: { token, isActive: true },
+    select: {
+      id: true,
+      fullName: true,
+      phone: true,
+      email: true,
+      isActive: true,
+    },
+  });
+
+  if (!customer) {
+    return { ok: false as const, status: 401, message: "Invalid customer token" };
+  }
+
+  return { ok: true as const, customer };
+}
+
+async function customerAuthRequiredWithAddresses(req: express.Request) {
+  const token = parseBearerToken(req);
+  if (!token) {
+    return { ok: false as const, status: 401, message: "Missing token" };
+  }
 
   const customer = await prisma.customer.findFirst({
     where: { token, isActive: true },
@@ -226,7 +264,7 @@ app.post("/api/orders", async (req, res) => {
       return res.status(400).json({ message: "Only COD is implemented right now" });
     }
 
-    const auth = await customerAuthRequired(req);
+    const auth = await customerAuthRequiredBasic(req);
     if (!auth.ok) {
       return res.status(auth.status).json({ message: auth.message });
     }
@@ -246,21 +284,21 @@ app.post("/api/orders", async (req, res) => {
     let customerLat = selectedAddress.lat;
     let customerLng = selectedAddress.lng;
     
-    if (!customerLat || !customerLng) {
-      console.log(`📍 Geocoding customer address: ${selectedAddress.fullAddress}`);
-      const coords = await geocoder.geocodeAddress(selectedAddress.fullAddress);
-      if (coords) {
-        customerLat = coords.latitude;
-        customerLng = coords.longitude;
-        console.log(`✅ Geocoded: ${customerLat}, ${customerLng}`);
+    // if (!customerLat || !customerLng) {
+    //   console.log(`📍 Geocoding customer address: ${selectedAddress.fullAddress}`);
+    //   const coords = await geocoder.geocodeAddress(selectedAddress.fullAddress);
+    //   if (coords) {
+    //     customerLat = coords.latitude;
+    //     customerLng = coords.longitude;
+    //     console.log(`✅ Geocoded: ${customerLat}, ${customerLng}`);
         
-        // Save to address for future use
-        await prisma.customerAddress.update({
-          where: { id: selectedAddress.id },
-          data: { lat: customerLat, lng: customerLng }
-        });
-      }
-    }
+    //     // Save to address for future use
+    //     await prisma.customerAddress.update({
+    //       where: { id: selectedAddress.id },
+    //       data: { lat: customerLat, lng: customerLng }
+    //     });
+    //   }
+    // }
 
     const normalizedServiceType = String(serviceType).trim().toUpperCase();
     const storeType = normalizedServiceType === "MEAT" ? "MEAT" : "ORGANIC";
@@ -300,24 +338,24 @@ app.post("/api/orders", async (req, res) => {
     }
 
     // ✅ ENHANCED: Ensure store has coordinates
-    if ((!store.lat || !store.lng) && store.address) {
-      console.log(`📍 Geocoding store address: ${store.address}`);
-      const coords = await geocoder.geocodeAddress(store.address);
-      if (coords) {
-        if (storeType === "MEAT") {
-          await prisma.meatShop.update({
-            where: { id: store.id },
-            data: { lat: coords.latitude, lng: coords.longitude }
-          });
-        } else {
-          await prisma.organicShop.update({
-            where: { id: store.id },
-            data: { lat: coords.latitude, lng: coords.longitude }
-          });
-        }
-        console.log(`✅ Store geocoded: ${coords.latitude}, ${coords.longitude}`);
-      }
-    }
+    // if ((!store.lat || !store.lng) && store.address) {
+    //   console.log(`📍 Geocoding store address: ${store.address}`);
+    //   const coords = await geocoder.geocodeAddress(store.address);
+    //   if (coords) {
+    //     if (storeType === "MEAT") {
+    //       await prisma.meatShop.update({
+    //         where: { id: store.id },
+    //         data: { lat: coords.latitude, lng: coords.longitude }
+    //       });
+    //     } else {
+    //       await prisma.organicShop.update({
+    //         where: { id: store.id },
+    //         data: { lat: coords.latitude, lng: coords.longitude }
+    //       });
+    //     }
+    //     console.log(`✅ Store geocoded: ${coords.latitude}, ${coords.longitude}`);
+    //   }
+    // }
 
     const itemIds = items.map((x: any) => String(x.itemId));
     let dbItems: any[] = [];
@@ -442,57 +480,57 @@ app.post("/api/orders", async (req, res) => {
       return orderRecord;
     });
 
-    const freshOrderRaw = await prisma.customerOrder.findUnique({
-      where: { id: createdOrder.id },
-      include: {
-        items: true,
-        statusHistory: true,
-      },
-    });
+    // const freshOrderRaw = await prisma.customerOrder.findUnique({
+    //   where: { id: createdOrder.id },
+    //   include: {
+    //     items: true,
+    //     statusHistory: true,
+    //   },
+    // });
 
-    if (!freshOrderRaw) {
-      return res.status(500).json({ message: "Failed to reload created order" });
-    }
+    // if (!freshOrderRaw) {
+    //   return res.status(500).json({ message: "Failed to reload created order" });
+    // }
 
-    const freshOrder: any = freshOrderRaw;
+    // const freshOrder: any = freshOrderRaw;
 
     io.to(`store-${store.id}`).emit("store-new-order", {
-      orderId: freshOrder.id,
-      orderNumber: freshOrder.orderNumber,
+      orderId: createdOrder.id,
+      orderNumber: createdOrder.orderNumber,
       storeId: store.id,
       storeName: store.shopName,
-      totalAmount: freshOrder.totalAmount,
-      paymentMethod: freshOrder.paymentMethod,
-      orderStatus: freshOrder.orderStatus,
-      createdAt: freshOrder.createdAt,
-      isScheduled: freshOrder.isScheduled,
-      scheduledFor: freshOrder.scheduledFor,
-      scheduleSlot: freshOrder.scheduleSlot,
-      deliveryNote: freshOrder.deliveryNote,
+      totalAmount: createdOrder.totalAmount,
+      paymentMethod: createdOrder.paymentMethod,
+      orderStatus: createdOrder.orderStatus,
+      createdAt: createdOrder.createdAt,
+      isScheduled: createdOrder.isScheduled,
+      scheduledFor: createdOrder.scheduledFor,
+      scheduleSlot: createdOrder.scheduleSlot,
+      deliveryNote: createdOrder.deliveryNote,
     });
 
     io.to(`customer-${auth.customer.id}`).emit("customer-order-created", {
-      orderId: freshOrder.id,
-      orderNumber: freshOrder.orderNumber,
-      orderStatus: freshOrder.orderStatus,
-      totalAmount: freshOrder.totalAmount,
-      createdAt: freshOrder.createdAt,
-      isScheduled: freshOrder.isScheduled,
-      scheduledFor: freshOrder.scheduledFor,
-      scheduleSlot: freshOrder.scheduleSlot,
+      orderId: createdOrder.id,
+      orderNumber: createdOrder.orderNumber,
+      orderStatus: createdOrder.orderStatus,
+      totalAmount: createdOrder.totalAmount,
+      createdAt: createdOrder.createdAt,
+      isScheduled: createdOrder.isScheduled,
+      scheduledFor: createdOrder.scheduledFor,
+      scheduleSlot: createdOrder.scheduleSlot,
     });
 
-    io.to(`order-${freshOrder.id}`).emit("order-status-updated", {
-      orderId: freshOrder.id,
-      orderStatus: freshOrder.orderStatus,
+    io.to(`order-${createdOrder.id}`).emit("order-status-updated", {
+      orderId: createdOrder.id,
+      orderStatus: createdOrder.orderStatus,
     });
 
     return res.json({
       message: "COD order placed successfully",
-      order: freshOrder,
+      order: createdOrder,
       geocoding: {
         customer: { lat: customerLat, lng: customerLng },
-        store: { lat: store.lat, lng: store.lng }
+        store: { lat: store.lat ?? null, lng: store.lng ?? null }
       }
     });
   } catch (e: any) {
@@ -564,7 +602,7 @@ async function requireDeliveryPartnerApproved(req: express.Request) {
 
 app.get("/api/customer/orders", async (req, res) => {
   try {
-    const auth = await customerAuthRequired(req);
+    const auth = await customerAuthRequiredBasic(req);
     if (!auth.ok) {
       return res.status(auth.status).json({ message: auth.message });
     }
@@ -591,7 +629,7 @@ app.get("/api/customer/orders", async (req, res) => {
 
 app.get("/api/customer/orders/:id", async (req, res) => {
   try {
-    const auth = await customerAuthRequired(req);
+    const auth = await customerAuthRequiredBasic(req);
     if (!auth.ok) {
       return res.status(auth.status).json({ message: auth.message });
     }
@@ -684,6 +722,22 @@ app.post("/api/customers/register", async (req, res) => {
     const city = req.body.city ? s(req.body.city) : null;
     const lat = asFloat(req.body.lat);
     const lng = asFloat(req.body.lng);
+
+    let resolvedLat = lat;
+    let resolvedLng = lng;
+
+    if (fullAddress && (resolvedLat === null || resolvedLng === null)) {
+      try {
+        const coords = await geocoder.geocodeAddress(fullAddress);
+        if (coords) {
+          resolvedLat = coords.latitude;
+          resolvedLng = coords.longitude;
+        }
+      } catch (err) {
+        console.error("REGISTER ADDRESS GEOCODE ERROR:", err);
+      }
+    }
+
     const landmark = req.body.landmark ? s(req.body.landmark) : null;
     const deliveryInstructions = req.body.deliveryInstructions
       ? s(req.body.deliveryInstructions)
@@ -719,8 +773,8 @@ app.post("/api/customers/register", async (req, res) => {
               label: addressLabel,
               fullAddress,
               city,
-              lat,
-              lng,
+              lat: resolvedLat,
+              lng: resolvedLng,
               landmark,
               deliveryInstructions,
               isDefault: true,
@@ -757,10 +811,12 @@ app.post("/api/customers/login", async (req, res) => {
 
     const customer = await prisma.customer.findUnique({
       where: { phone },
-      include: {
-        addresses: {
-          orderBy: { createdAt: "desc" },
-        },
+      select: {
+        id: true,
+        fullName: true,
+        phone: true,
+        email: true,
+        passwordHash: true,
       },
     });
 
@@ -775,19 +831,25 @@ app.post("/api/customers/login", async (req, res) => {
 
     const token = genToken();
 
-    const updated = await prisma.customer.update({
+    await prisma.customer.update({
       where: { id: customer.id },
       data: { token },
-      include: {
-        addresses: {
-          orderBy: { createdAt: "desc" },
-        },
-      },
+    });
+
+    const addresses = await prisma.customerAddress.findMany({
+      where: { customerId: customer.id },
+      orderBy: { createdAt: "desc" },
     });
 
     return res.json({
       token,
-      customer: updated,
+      customer: {
+        id: customer.id,
+        fullName: customer.fullName,
+        phone: customer.phone,
+        email: customer.email,
+        addresses,
+      },
     });
   } catch (e: any) {
     console.error("CUSTOMER LOGIN ERROR:", e);
@@ -798,7 +860,7 @@ app.post("/api/customers/login", async (req, res) => {
 // Get current customer profile
 app.get("/api/customers/me", async (req, res) => {
   try {
-    const auth = await customerAuthRequired(req);
+    const auth = await customerAuthRequiredBasic(req);
     if (!auth.ok) {
       return res.status(auth.status).json({ message: auth.message });
     }
@@ -813,7 +875,7 @@ app.get("/api/customers/me", async (req, res) => {
 // Add customer address
 app.post("/api/customers/addresses", async (req, res) => {
   try {
-    const auth = await customerAuthRequired(req);
+    const auth = await customerAuthRequiredBasic(req);
     if (!auth.ok) {
       return res.status(auth.status).json({ message: auth.message });
     }
@@ -821,8 +883,8 @@ app.post("/api/customers/addresses", async (req, res) => {
     const label = req.body.label ? s(req.body.label) : "Home";
     const fullAddress = s(req.body.fullAddress);
     const city = req.body.city ? s(req.body.city) : null;
-    const lat = asFloat(req.body.lat);
-    const lng = asFloat(req.body.lng);
+    let lat = asFloat(req.body.lat);
+    let lng = asFloat(req.body.lng);
     const landmark = req.body.landmark ? s(req.body.landmark) : null;
     const deliveryInstructions = req.body.deliveryInstructions
       ? s(req.body.deliveryInstructions)
@@ -831,6 +893,18 @@ app.post("/api/customers/addresses", async (req, res) => {
 
     if (!fullAddress) {
       return res.status(400).json({ error: "fullAddress is required" });
+    }
+
+    if ((lat === null || lng === null) && fullAddress) {
+      try {
+        const coords = await geocoder.geocodeAddress(fullAddress);
+        if (coords) {
+          lat = coords.latitude;
+          lng = coords.longitude;
+        }
+      } catch (err) {
+        console.error("ADDRESS CREATE GEOCODE ERROR:", err);
+      }
     }
 
     if (lat === null || lat < -90 || lat > 90) {
@@ -880,7 +954,7 @@ app.post("/api/customers/addresses", async (req, res) => {
 // List customer addresses
 app.get("/api/customers/addresses", async (req, res) => {
   try {
-    const auth = await customerAuthRequired(req);
+    const auth = await customerAuthRequiredBasic(req);
     if (!auth.ok) {
       return res.status(auth.status).json({ message: auth.message });
     }
@@ -1738,14 +1812,33 @@ app.post("/api/meatshop/location", async (req, res) => {
     const address = req.body.address ? s(req.body.address) : null;
     const city = req.body.city ? s(req.body.city) : null;
 
+    let resolvedLat = lat;
+    let resolvedLng = lng;
+
+    if ((resolvedLat === null || resolvedLng === null) && address) {
+      try {
+        const coords = await geocoder.geocodeAddress(address);
+        if (coords) {
+          resolvedLat = coords.latitude;
+          resolvedLng = coords.longitude;
+        }
+      } catch (err) {
+        console.error("MEATSHOP LOCATION GEOCODE ERROR:", err);
+      }
+    }
+
+    if (resolvedLat === null || resolvedLng === null) {
+      return res.status(400).json({ message: "lat/lng or geocodable address is required" });
+    }
+
     const shop = await prisma.meatShop.upsert({
       where: { partnerId: gate.partner.id },
-      update: { lat, lng, address, city },
+      update: { lat: resolvedLat, lng: resolvedLng, address, city },
       create: {
         partnerId: gate.partner.id,
         shopName: gate.partner.businessName || gate.partner.fullName || "Meat Shop",
-        lat,
-        lng,
+        lat: resolvedLat,
+        lng: resolvedLng,
         address,
         city,
       },
