@@ -121,6 +121,31 @@ function generate4DigitOtp() {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
+function toRadians(value: number) {
+  return (value * Math.PI) / 180;
+}
+
+function distanceInMeters(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+) {
+  const R = 6371000; // Earth radius in meters
+  const dLat = toRadians(lat2 - lat1);
+  const dLng = toRadians(lng2 - lng1);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(lat1)) *
+      Math.cos(toRadians(lat2)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 async function customerAuthRequiredBasic(req: express.Request) {
   const token = parseBearerToken(req);
   if (!token) {
@@ -895,24 +920,15 @@ app.post("/api/customers/addresses", async (req, res) => {
       return res.status(400).json({ error: "fullAddress is required" });
     }
 
-    if ((lat === null || lng === null) && fullAddress) {
-      try {
-        const coords = await geocoder.geocodeAddress(fullAddress);
-        if (coords) {
-          lat = coords.latitude;
-          lng = coords.longitude;
-        }
-      } catch (err) {
-        console.error("ADDRESS CREATE GEOCODE ERROR:", err);
-      }
-    }
-
+    // 🚫 Do NOT geocode here synchronously unless you really need it
+    // If frontend doesn't send lat/lng, keep null or reject based on your business rule.
+    // Recommended: require frontend-selected coordinates.
     if (lat === null || lat < -90 || lat > 90) {
-      return res.status(400).json({ error: "Valid lat is required" });
+      return res.status(400).json({ error: "Valid lat is required. Please select location from map." });
     }
 
     if (lng === null || lng < -180 || lng > 180) {
-      return res.status(400).json({ error: "Valid lng is required" });
+      return res.status(400).json({ error: "Valid lng is required. Please select location from map." });
     }
 
     if (isDefault) {
@@ -947,6 +963,89 @@ app.post("/api/customers/addresses", async (req, res) => {
     return res.status(500).json({
       error: e?.message ?? "Server error",
     });
+  }
+});
+
+app.get("/api/customers/addresses/default", async (req, res) => {
+  try {
+    const auth = await customerAuthRequiredBasic(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ message: auth.message });
+    }
+
+    const defaultAddress = await prisma.customerAddress.findFirst({
+      where: {
+        customerId: auth.customer.id,
+        isDefault: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!defaultAddress) {
+      return res.status(404).json({ message: "Default address not found" });
+    }
+
+    return res.json({ address: defaultAddress });
+  } catch (e: any) {
+    console.error("DEFAULT CUSTOMER ADDRESS ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
+
+app.post("/api/customers/addresses/check-current-location", async (req, res) => {
+  try {
+    const auth = await customerAuthRequiredBasic(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ message: auth.message });
+    }
+
+    const currentLat = asFloat(req.body.lat);
+    const currentLng = asFloat(req.body.lng);
+    const radiusMeters = Number(req.body.radiusMeters ?? 150);
+
+    if (currentLat === null || currentLat < -90 || currentLat > 90) {
+      return res.status(400).json({ message: "Valid lat is required" });
+    }
+
+    if (currentLng === null || currentLng < -180 || currentLng > 180) {
+      return res.status(400).json({ message: "Valid lng is required" });
+    }
+
+    const defaultAddress = await prisma.customerAddress.findFirst({
+      where: {
+        customerId: auth.customer.id,
+        isDefault: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!defaultAddress || defaultAddress.lat === null || defaultAddress.lng === null) {
+      return res.json({
+        matched: false,
+        reason: "NO_DEFAULT_ADDRESS",
+        address: null,
+      });
+    }
+
+    const distance = distanceInMeters(
+      currentLat,
+      currentLng,
+      Number(defaultAddress.lat),
+      Number(defaultAddress.lng)
+    );
+
+    const matched = distance <= radiusMeters;
+
+    return res.json({
+      matched,
+      radiusMeters,
+      distanceMeters: Math.round(distance),
+      address: matched ? defaultAddress : null,
+      savedAddress: defaultAddress,
+    });
+  } catch (e: any) {
+    console.error("CHECK CURRENT LOCATION ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
 
