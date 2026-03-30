@@ -1,7 +1,7 @@
 // src/routes/tracking.ts
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { computeLiveRoute, geocodeAddress } from '../utils/maps';
+import { computeLiveRoute } from '../utils/maps';
 import { getDeliveryStatus } from '../websocket';
 
 const prisma = new PrismaClient();
@@ -17,24 +17,19 @@ function normalizeParam(value: string | string[] | undefined): string {
   return value || '';
 }
 
-async function resolveAddress(address?: string | null): Promise<LatLng | null> {
-  if (!address) return null;
-
-  try {
-    return await geocodeAddress(address);
-  } catch (error) {
-    console.error('Geocoding error for address:', address, error);
-    return null;
-  }
-}
-
 function fromDbLatLng(lat?: number | null, lng?: number | null): LatLng | null {
-  if (typeof lat === 'number' && typeof lng === 'number') {
+  if (
+    typeof lat === 'number' &&
+    typeof lng === 'number' &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng)
+  ) {
     return {
       latitude: lat,
       longitude: lng,
     };
   }
+
   return null;
 }
 
@@ -71,7 +66,14 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
 
     const liveTracking = getDeliveryStatus(deliveryId);
 
-    let orderRecord: any = null;
+    let orderRecord: {
+      id: string;
+      customerLat: number | null;
+      customerLng: number | null;
+      storeType: string | null;
+      storeId: string | null;
+    } | null = null;
+
     if (delivery.orderId) {
       orderRecord = await prisma.customerOrder.findUnique({
         where: { id: delivery.orderId },
@@ -93,38 +95,33 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
         select: {
           lat: true,
           lng: true,
-          address: true,
         },
       });
 
-      storeLocation =
-        fromDbLatLng(meatShop?.lat, meatShop?.lng) ||
-        (await resolveAddress(meatShop?.address || delivery.storeAddress));
+      storeLocation = fromDbLatLng(meatShop?.lat, meatShop?.lng);
     } else if (orderRecord?.storeType === 'ORGANIC' && orderRecord?.storeId) {
       const organicShop = await prisma.organicShop.findUnique({
         where: { id: orderRecord.storeId },
         select: {
           lat: true,
           lng: true,
-          address: true,
         },
       });
 
-      storeLocation =
-        fromDbLatLng(organicShop?.lat, organicShop?.lng) ||
-        (await resolveAddress(organicShop?.address || delivery.storeAddress));
-    } else {
-      storeLocation = await resolveAddress(delivery.storeAddress);
+      storeLocation = fromDbLatLng(organicShop?.lat, organicShop?.lng);
     }
 
-    const customerLocation =
-      fromDbLatLng(orderRecord?.customerLat, orderRecord?.customerLng) ||
-      (await resolveAddress(delivery.customerAddress));
+    const customerLocation = fromDbLatLng(
+      orderRecord?.customerLat,
+      orderRecord?.customerLng
+    );
 
     const partnerLocation =
       liveTracking?.partnerLocation &&
       typeof liveTracking.partnerLocation.lat === 'number' &&
-      typeof liveTracking.partnerLocation.lng === 'number'
+      typeof liveTracking.partnerLocation.lng === 'number' &&
+      Number.isFinite(liveTracking.partnerLocation.lat) &&
+      Number.isFinite(liveTracking.partnerLocation.lng)
         ? {
             latitude: liveTracking.partnerLocation.lat,
             longitude: liveTracking.partnerLocation.lng,
@@ -135,7 +132,9 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
     let etaMinutes: number | null = null;
     let distanceKm: number | null = null;
 
-    const currentStatus = String(liveTracking?.status || delivery.status || '').toUpperCase();
+    const currentStatus = String(
+      liveTracking?.status || delivery.status || ''
+    ).toUpperCase();
 
     if (partnerLocation) {
       const goingToStore = [
@@ -145,7 +144,7 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
         'ARRIVED_AT_STORE',
       ].includes(currentStatus);
 
-      const destination = goingToStore && storeLocation ? storeLocation : customerLocation;
+      const destination = goingToStore ? storeLocation : customerLocation;
 
       if (destination) {
         try {
@@ -155,11 +154,15 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
             waypoints: [],
           });
 
-          route = Array.isArray(liveRoute.route) ? liveRoute.route : [];
+          route = Array.isArray(liveRoute?.route) ? liveRoute.route : [];
           etaMinutes =
-            typeof liveRoute.etaMinutes === 'number' ? liveRoute.etaMinutes : null;
+            typeof liveRoute?.etaMinutes === 'number'
+              ? liveRoute.etaMinutes
+              : null;
           distanceKm =
-            typeof liveRoute.distanceKm === 'number' ? liveRoute.distanceKm : null;
+            typeof liveRoute?.distanceKm === 'number'
+              ? liveRoute.distanceKm
+              : null;
         } catch (routeError) {
           console.error('Route compute error:', routeError);
         }
@@ -199,6 +202,11 @@ router.get('/deliveries/:id/tracking', async (req: Request, res: Response) => {
       etaMinutes,
       distanceKm,
       liveTimestamp: liveTracking?.partnerLocation?.timestamp || null,
+      warnings: {
+        missingStoreCoordinates: !storeLocation,
+        missingCustomerCoordinates: !customerLocation,
+        missingPartnerCoordinates: !partnerLocation,
+      },
     });
   } catch (error: any) {
     console.error('TRACKING ROUTE ERROR:', error);

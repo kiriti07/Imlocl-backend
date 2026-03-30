@@ -99,9 +99,7 @@ async function notifyPartner(_partnerId: string, _delivery: any) {
   console.log("notifyPartner placeholder called");
 }
 
-// function getDeliveryStatus(_deliveryId: string) {
-//   return null;
-// }
+
 // ----------------------
 // helpers
 // ----------------------
@@ -309,21 +307,6 @@ app.post("/api/orders", async (req, res) => {
     let customerLat = selectedAddress.lat;
     let customerLng = selectedAddress.lng;
     
-    // if (!customerLat || !customerLng) {
-    //   console.log(`📍 Geocoding customer address: ${selectedAddress.fullAddress}`);
-    //   const coords = await geocoder.geocodeAddress(selectedAddress.fullAddress);
-    //   if (coords) {
-    //     customerLat = coords.latitude;
-    //     customerLng = coords.longitude;
-    //     console.log(`✅ Geocoded: ${customerLat}, ${customerLng}`);
-        
-    //     // Save to address for future use
-    //     await prisma.customerAddress.update({
-    //       where: { id: selectedAddress.id },
-    //       data: { lat: customerLat, lng: customerLng }
-    //     });
-    //   }
-    // }
 
     const normalizedServiceType = String(serviceType).trim().toUpperCase();
     const storeType = normalizedServiceType === "MEAT" ? "MEAT" : "ORGANIC";
@@ -361,26 +344,6 @@ app.post("/api/orders", async (req, res) => {
     if (!store) {
       return res.status(404).json({ message: "Store not found or currently closed" });
     }
-
-    // ✅ ENHANCED: Ensure store has coordinates
-    // if ((!store.lat || !store.lng) && store.address) {
-    //   console.log(`📍 Geocoding store address: ${store.address}`);
-    //   const coords = await geocoder.geocodeAddress(store.address);
-    //   if (coords) {
-    //     if (storeType === "MEAT") {
-    //       await prisma.meatShop.update({
-    //         where: { id: store.id },
-    //         data: { lat: coords.latitude, lng: coords.longitude }
-    //       });
-    //     } else {
-    //       await prisma.organicShop.update({
-    //         where: { id: store.id },
-    //         data: { lat: coords.latitude, lng: coords.longitude }
-    //       });
-    //     }
-    //     console.log(`✅ Store geocoded: ${coords.latitude}, ${coords.longitude}`);
-    //   }
-    // }
 
     const itemIds = items.map((x: any) => String(x.itemId));
     let dbItems: any[] = [];
@@ -504,20 +467,6 @@ app.post("/api/orders", async (req, res) => {
 
       return orderRecord;
     });
-
-    // const freshOrderRaw = await prisma.customerOrder.findUnique({
-    //   where: { id: createdOrder.id },
-    //   include: {
-    //     items: true,
-    //     statusHistory: true,
-    //   },
-    // });
-
-    // if (!freshOrderRaw) {
-    //   return res.status(500).json({ message: "Failed to reload created order" });
-    // }
-
-    // const freshOrder: any = freshOrderRaw;
 
     io.to(`store-${store.id}`).emit("store-new-order", {
       orderId: createdOrder.id,
@@ -1077,19 +1026,15 @@ app.put("/api/customers/addresses/default/update-if-moved", async (req, res) => 
       return res.status(auth.status).json({ message: auth.message });
     }
 
-    const fullAddress = s(req.body.fullAddress);
-    const city = req.body.city ? s(req.body.city) : null;
+    const fullAddressInput = req.body.fullAddress ? s(req.body.fullAddress) : null;
+    const cityInput = req.body.city ? s(req.body.city) : null;
     const lat = asFloat(req.body.lat);
     const lng = asFloat(req.body.lng);
-    const landmark = req.body.landmark ? s(req.body.landmark) : null;
-    const deliveryInstructions = req.body.deliveryInstructions
+    const landmarkInput = req.body.landmark ? s(req.body.landmark) : null;
+    const deliveryInstructionsInput = req.body.deliveryInstructions
       ? s(req.body.deliveryInstructions)
       : null;
     const radiusMeters = Number(req.body.radiusMeters ?? 150);
-
-    if (!fullAddress) {
-      return res.status(400).json({ message: "fullAddress is required" });
-    }
 
     if (lat === null || lat < -90 || lat > 90) {
       return res.status(400).json({ message: "Valid lat is required" });
@@ -1112,12 +1057,12 @@ app.put("/api/customers/addresses/default/update-if-moved", async (req, res) => 
         data: {
           customerId: auth.customer.id,
           label: "Home",
-          fullAddress,
-          city,
+          fullAddress: fullAddressInput || "Current Location",
+          city: cityInput,
           lat,
           lng,
-          landmark,
-          deliveryInstructions,
+          landmark: landmarkInput,
+          deliveryInstructions: deliveryInstructionsInput,
           isDefault: true,
         },
       });
@@ -1125,6 +1070,7 @@ app.put("/api/customers/addresses/default/update-if-moved", async (req, res) => 
       return res.json({
         updated: false,
         created: true,
+        reused: false,
         address,
       });
     }
@@ -1154,12 +1100,13 @@ app.put("/api/customers/addresses/default/update-if-moved", async (req, res) => 
     const updatedAddress = await prisma.customerAddress.update({
       where: { id: defaultAddress.id },
       data: {
-        fullAddress,
-        city,
+        fullAddress: fullAddressInput ?? defaultAddress.fullAddress,
+        city: cityInput ?? defaultAddress.city,
         lat,
         lng,
-        landmark,
-        deliveryInstructions,
+        landmark: landmarkInput ?? defaultAddress.landmark,
+        deliveryInstructions:
+          deliveryInstructionsInput ?? defaultAddress.deliveryInstructions,
       },
     });
 
@@ -1880,20 +1827,6 @@ app.post("/api/auth/login", async (req, res) => {
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
-
-
-// ✅ ME (refresh status)
-// app.get("/api/auth/me", async (req, res) => {
-//   try {
-//     const auth = await authRequired(req);
-//     if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
-
-//     return res.json({ partner: auth.partner });
-//   } catch (e: any) {
-//     console.error("ME ERROR:", e);
-//     return res.status(500).json({ message: e?.message ?? "Server error" });
-//   }
-// });
 
 app.get("/api/auth/me", async (req, res) => {
   try {
