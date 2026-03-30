@@ -1070,6 +1070,110 @@ app.get("/api/customers/addresses", async (req, res) => {
   }
 });
 
+app.put("/api/customers/addresses/default/update-if-moved", async (req, res) => {
+  try {
+    const auth = await customerAuthRequiredBasic(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ message: auth.message });
+    }
+
+    const fullAddress = s(req.body.fullAddress);
+    const city = req.body.city ? s(req.body.city) : null;
+    const lat = asFloat(req.body.lat);
+    const lng = asFloat(req.body.lng);
+    const landmark = req.body.landmark ? s(req.body.landmark) : null;
+    const deliveryInstructions = req.body.deliveryInstructions
+      ? s(req.body.deliveryInstructions)
+      : null;
+    const radiusMeters = Number(req.body.radiusMeters ?? 150);
+
+    if (!fullAddress) {
+      return res.status(400).json({ message: "fullAddress is required" });
+    }
+
+    if (lat === null || lat < -90 || lat > 90) {
+      return res.status(400).json({ message: "Valid lat is required" });
+    }
+
+    if (lng === null || lng < -180 || lng > 180) {
+      return res.status(400).json({ message: "Valid lng is required" });
+    }
+
+    const defaultAddress = await prisma.customerAddress.findFirst({
+      where: {
+        customerId: auth.customer.id,
+        isDefault: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!defaultAddress) {
+      const address = await prisma.customerAddress.create({
+        data: {
+          customerId: auth.customer.id,
+          label: "Home",
+          fullAddress,
+          city,
+          lat,
+          lng,
+          landmark,
+          deliveryInstructions,
+          isDefault: true,
+        },
+      });
+
+      return res.json({
+        updated: false,
+        created: true,
+        address,
+      });
+    }
+
+    const oldLat = defaultAddress.lat;
+    const oldLng = defaultAddress.lng;
+
+    if (oldLat !== null && oldLng !== null) {
+      const distance = distanceInMeters(
+        Number(oldLat),
+        Number(oldLng),
+        lat,
+        lng
+      );
+
+      if (distance <= radiusMeters) {
+        return res.json({
+          updated: false,
+          created: false,
+          reused: true,
+          distanceMeters: Math.round(distance),
+          address: defaultAddress,
+        });
+      }
+    }
+
+    const updatedAddress = await prisma.customerAddress.update({
+      where: { id: defaultAddress.id },
+      data: {
+        fullAddress,
+        city,
+        lat,
+        lng,
+        landmark,
+        deliveryInstructions,
+      },
+    });
+
+    return res.json({
+      updated: true,
+      created: false,
+      reused: false,
+      address: updatedAddress,
+    });
+  } catch (e: any) {
+    console.error("UPDATE DEFAULT ADDRESS IF MOVED ERROR:", e);
+    return res.status(500).json({ message: e?.message ?? "Server error" });
+  }
+});
 
 // ----------------------
 // ORGANIC helpers
