@@ -34,6 +34,12 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Docker login to ACR
         uses: azure/docker-login@v2
         with:
@@ -92,7 +98,7 @@ jobs:
               AZURE_STORAGE_ACCOUNT_NAME=imlocldev \
               NODE_ENV=production \
               PORT=8080
-      
+
       - name: Verify environment variables in Container App
         run: |
           az containerapp show \
