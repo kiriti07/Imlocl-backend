@@ -812,8 +812,11 @@ app.post("/api/customers/login", async (req, res) => {
 
     const addresses = await prisma.customerAddress.findMany({
       where: { customerId: customer.id },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
     });
+
+    const defaultAddress =
+      addresses.find((a: any) => a.isDefault) || addresses[0] || null;
 
     return res.json({
       token,
@@ -823,6 +826,7 @@ app.post("/api/customers/login", async (req, res) => {
         phone: customer.phone,
         email: customer.email,
         addresses,
+        defaultAddress,
       },
     });
   } catch (e: any) {
@@ -834,12 +838,27 @@ app.post("/api/customers/login", async (req, res) => {
 // Get current customer profile
 app.get("/api/customers/me", async (req, res) => {
   try {
-    const auth = await customerAuthRequiredBasic(req);
+    const auth = await customerAuthRequiredWithAddresses(req);
     if (!auth.ok) {
       return res.status(auth.status).json({ message: auth.message });
     }
 
-    return res.json({ customer: auth.customer });
+    const defaultAddress =
+      auth.customer.addresses.find((a: any) => a.isDefault) ||
+      auth.customer.addresses[0] ||
+      null;
+
+    return res.json({
+      customer: {
+        id: auth.customer.id,
+        fullName: auth.customer.fullName,
+        phone: auth.customer.phone,
+        email: auth.customer.email,
+        isActive: auth.customer.isActive,
+        addresses: auth.customer.addresses,
+        defaultAddress,
+      },
+    });
   } catch (e: any) {
     console.error("CUSTOMER ME ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
