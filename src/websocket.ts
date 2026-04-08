@@ -342,6 +342,94 @@ export function setupWebSocket(server: http.Server) {
       }
     });
 
+    // ─── Live Chat ────────────────────────────────────────────────────────────────
+
+    socket.on('agent-join-chat', (data: { roomId: string }) => {
+      if (!data?.roomId) return;
+      socket.join(`chat-${data.roomId}`);
+      console.log(`💬 Agent ${socket.id} joined chat room: ${data.roomId}`);
+    });
+
+    socket.on('user-join-chat', (data: { roomId: string }) => {
+      if (!data?.roomId) return;
+      socket.join(`chat-${data.roomId}`);
+      console.log(`💬 User ${socket.id} joined chat room: ${data.roomId}`);
+    });
+
+    socket.on('chat-send-message', async (data: {
+      roomId:     string;
+      senderId:   string;
+      senderType: string;
+      senderName: string;
+      message:    string;
+    }) => {
+      try {
+        if (!data?.roomId || !data?.message?.trim()) return;
+
+        const { PrismaClient } = await import('@prisma/client');
+        const prismaChat = new PrismaClient();
+
+        const saved = await prismaChat.chatMessage.create({
+          data: {
+            roomId:     String(data.roomId),
+            senderId:   String(data.senderId),
+            senderType: String(data.senderType),
+            senderName: String(data.senderName),
+            message:    String(data.message).trim(),
+          },
+        });
+
+        await prismaChat.$disconnect();
+
+        console.log(`💬 Chat message in room ${data.roomId} from ${data.senderName}`);
+        io.to(`chat-${data.roomId}`).emit('chat-new-message', saved);
+      } catch (error) {
+        console.error('❌ chat-send-message error:', error);
+        socket.emit('chat-error', { message: 'Failed to send message' });
+      }
+    });
+
+    socket.on('chat-load-history', async (data: { roomId: string }) => {
+      try {
+        if (!data?.roomId) return;
+
+        const { PrismaClient } = await import('@prisma/client');
+        const prismaChat = new PrismaClient();
+
+        const messages = await prismaChat.chatMessage.findMany({
+          where: { roomId: String(data.roomId) },
+          orderBy: { createdAt: 'asc' },
+          take: 100,
+        });
+
+        await prismaChat.$disconnect();
+
+        socket.emit('chat-history', { roomId: data.roomId, messages });
+      } catch (error) {
+        console.error('❌ chat-load-history error:', error);
+      }
+    });
+
+    socket.on('chat-mark-read', async (data: { roomId: string }) => {
+      try {
+        if (!data?.roomId) return;
+
+        const { PrismaClient } = await import('@prisma/client');
+        const prismaChat = new PrismaClient();
+
+        await prismaChat.chatMessage.updateMany({
+          where: { roomId: String(data.roomId), isRead: false, senderType: { not: 'AGENT' } },
+          data:  { isRead: true },
+        });
+
+        await prismaChat.$disconnect();
+
+        io.to(`chat-${data.roomId}`).emit('chat-messages-read', { roomId: data.roomId });
+      } catch (error) {
+        console.error('❌ chat-mark-read error:', error);
+      }
+    });
+
     socket.on('disconnect', () => {
       console.log(`🔴 Client disconnected: ${socket.id}`);
 

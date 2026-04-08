@@ -309,7 +309,6 @@ model Delivery {
   storeAddress          String?
   status                DeliveryStatus
   assignedAt            DateTime?       @default(now())
-  arrivedAtStoreAt      DateTime?
   pickedUpAt            DateTime?
   deliveredAt           DateTime?
   estimatedPickupTime   DateTime?
@@ -319,11 +318,12 @@ model Delivery {
   currentLat            Float?
   currentLng            Float?
   lastLocationUpdate    DateTime?
+  items                 Json
+  totalAmount           Float
+  arrivedAtStoreAt      DateTime?
   pickupOtp             String?
   pickupOtpVerified     Boolean         @default(false)
   pickupOtpVerifiedAt   DateTime?
-  items                 Json
-  totalAmount           Float
   partner               DeliveryPartner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
 
   @@index([status])
@@ -488,6 +488,137 @@ model SubscriptionPlan {
   @@map("subscription_plan")
 }
 
+model Customer {
+  id           String            @id @default(uuid())
+  fullName     String
+  phone        String            @unique
+  email        String?
+  token        String?           @unique
+  isActive     Boolean           @default(true)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  passwordHash String
+  addresses    CustomerAddress[]
+
+  @@map("Customer")
+}
+
+model CustomerAddress {
+  id                   String   @id @default(uuid())
+  customerId           String
+  label                String?
+  fullAddress          String
+  city                 String?
+  lat                  Float?
+  lng                  Float?
+  isDefault            Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  deliveryInstructions String?
+  landmark             String?
+  customer             Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@map("CustomerAddress")
+}
+
+model CustomerOrder {
+  id                String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderNumber       String               @unique
+  serviceType       String
+  storeType         String
+  storeId           String
+  storeName         String
+  customerName      String
+  customerPhone     String
+  customerAddress   String
+  customerLat       Float?
+  customerLng       Float?
+  paymentMethod     String
+  paymentStatus     String               @default("PENDING_CASH_COLLECTION")
+  orderStatus       String               @default("PLACED")
+  couponCode        String?
+  subtotal          Decimal              @db.Decimal(10, 2)
+  packagingCharge   Decimal              @default(0) @db.Decimal(10, 2)
+  deliveryFee       Decimal              @default(0) @db.Decimal(10, 2)
+  platformFee       Decimal              @default(0) @db.Decimal(10, 2)
+  handlingFee       Decimal              @default(0) @db.Decimal(10, 2)
+  gst               Decimal              @default(0) @db.Decimal(10, 2)
+  restaurantGst     Decimal              @default(0) @db.Decimal(10, 2)
+  gstOnDeliveryFee  Decimal              @default(0) @db.Decimal(10, 2)
+  lateNightFee      Decimal              @default(0) @db.Decimal(10, 2)
+  discount          Decimal              @default(0) @db.Decimal(10, 2)
+  totalAmount       Decimal              @db.Decimal(10, 2)
+  deliveryId        String?              @unique @db.Uuid
+  deliveryPartnerId String?              @db.Uuid
+  placedAt          DateTime             @default(now()) @db.Timestamp(6)
+  acceptedAt        DateTime?            @db.Timestamp(6)
+  rejectedAt        DateTime?            @db.Timestamp(6)
+  readyForPickupAt  DateTime?            @db.Timestamp(6)
+  deliveredAt       DateTime?            @db.Timestamp(6)
+  cashCollectedAt   DateTime?            @db.Timestamp(6)
+  createdAt         DateTime             @default(now()) @db.Timestamp(6)
+  updatedAt         DateTime             @default(now()) @updatedAt @db.Timestamp(6)
+  deliveryNote      String?
+  isScheduled       Boolean              @default(false)
+  scheduleSlot      String?
+  scheduledFor      DateTime?            @db.Timestamp(6)
+  items             CustomerOrderItem[]
+  statusHistory     OrderStatusHistory[]
+
+  @@index([storeId])
+  @@index([orderStatus])
+  @@index([paymentStatus])
+  @@index([deliveryId])
+  @@map("customer_order")
+}
+
+model CustomerOrderItem {
+  id        String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId   String        @db.Uuid
+  itemId    String
+  itemName  String
+  unit      String?
+  price     Decimal       @db.Decimal(10, 2)
+  quantity  Decimal       @db.Decimal(10, 2)
+  lineTotal Decimal       @db.Decimal(10, 2)
+  imageUrl  String?
+  createdAt DateTime      @default(now()) @db.Timestamp(6)
+  order     CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("customer_order_item")
+}
+
+model OrderStatusHistory {
+  id        String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId   String        @db.Uuid
+  status    String
+  note      String?
+  actorType String?
+  actorId   String?
+  createdAt DateTime      @default(now()) @db.Timestamp(6)
+  order     CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([status])
+  @@map("order_status_history")
+}
+
+model ChatMessage {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  roomId     String
+  senderId   String
+  senderType String
+  senderName String
+  message    String
+  isRead     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([roomId])
+  @@map("ChatMessage")
+}
+
 enum PartnerStatus {
   PENDING
   APPROVED
@@ -509,7 +640,6 @@ enum PartnerRole {
 
 enum DeliveryStatus {
   ASSIGNED
-  ACCEPTED
   ON_THE_WAY_TO_STORE
   ARRIVED_AT_STORE
   PICKED_UP
@@ -518,6 +648,7 @@ enum DeliveryStatus {
   DELIVERED
   FAILED
   CANCELLED
+  ACCEPTED
 
   @@map("DeliveryStatus")
 }
@@ -564,126 +695,4 @@ enum BookingStatus {
   CANCELLED
 
   @@map("BookingStatus")
-}
-
-model Customer {
-  id          String            @id @default(uuid())
-  fullName    String
-  phone       String            @unique
-  email       String?
-  passwordHash String
-  token       String?           @unique
-  isActive    Boolean           @default(true)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
-
-  addresses   CustomerAddress[]
-
-  @@map("Customer")
-}
-
-model CustomerAddress {
-  id                   String    @id @default(uuid())
-  customerId           String
-  label                String?
-  fullAddress          String
-  city                 String?
-  lat                  Float?
-  lng                  Float?
-  landmark             String?
-  deliveryInstructions String?
-  isDefault            Boolean   @default(false)
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
-
-  customer             Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
-
-  @@index([customerId])
-  @@map("CustomerAddress")
-}
-
-model CustomerOrder {
-  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orderNumber       String   @unique
-  serviceType       String
-  storeType         String
-  storeId           String
-  storeName         String
-  customerName      String
-  customerPhone     String
-  customerAddress   String
-  customerLat       Float?
-  customerLng       Float?
-  paymentMethod     String
-  paymentStatus     String              @default("PENDING_CASH_COLLECTION")
-  orderStatus       String              @default("PLACED")
-  couponCode        String?
-  subtotal          Decimal             @db.Decimal(10, 2)
-  packagingCharge   Decimal             @default(0) @db.Decimal(10, 2)
-  deliveryFee       Decimal             @default(0) @db.Decimal(10, 2)
-  platformFee       Decimal             @default(0) @db.Decimal(10, 2)
-  handlingFee       Decimal             @default(0) @db.Decimal(10, 2)
-  gst               Decimal             @default(0) @db.Decimal(10, 2)
-  restaurantGst     Decimal             @default(0) @db.Decimal(10, 2)
-  gstOnDeliveryFee  Decimal             @default(0) @db.Decimal(10, 2)
-  lateNightFee      Decimal             @default(0) @db.Decimal(10, 2)
-  discount          Decimal             @default(0) @db.Decimal(10, 2)
-  totalAmount       Decimal             @db.Decimal(10, 2)
-  deliveryId        String?             @unique @db.Uuid
-  deliveryPartnerId String?             @db.Uuid
-  isScheduled       Boolean             @default(false)
-  scheduledFor      DateTime?           @db.Timestamp(6)
-  scheduleSlot      String?
-  deliveryNote      String?
-  placedAt          DateTime            @default(now()) @db.Timestamp(6)
-  acceptedAt        DateTime?           @db.Timestamp(6)
-  rejectedAt        DateTime?           @db.Timestamp(6)
-  readyForPickupAt  DateTime?           @db.Timestamp(6)
-  deliveredAt       DateTime?           @db.Timestamp(6)
-  cashCollectedAt   DateTime?           @db.Timestamp(6)
-  createdAt         DateTime            @default(now()) @db.Timestamp(6)
-  updatedAt         DateTime            @default(now()) @updatedAt @db.Timestamp(6)
-
-  items             CustomerOrderItem[]
-  statusHistory     OrderStatusHistory[]
-
-  @@index([storeId])
-  @@index([orderStatus])
-  @@index([paymentStatus])
-  @@index([deliveryId])
-  @@map("customer_order")
-}
-
-model CustomerOrderItem {
-  id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orderId    String        @db.Uuid
-  itemId     String
-  itemName   String
-  unit       String?
-  price      Decimal       @db.Decimal(10, 2)
-  quantity   Decimal       @db.Decimal(10, 2)
-  lineTotal  Decimal       @db.Decimal(10, 2)
-  imageUrl   String?
-  createdAt  DateTime      @default(now()) @db.Timestamp(6)
-
-  order      CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
-
-  @@index([orderId])
-  @@map("customer_order_item")
-}
-
-model OrderStatusHistory {
-  id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orderId    String        @db.Uuid
-  status     String
-  note       String?
-  actorType  String?
-  actorId    String?
-  createdAt  DateTime      @default(now()) @db.Timestamp(6)
-
-  order      CustomerOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
-
-  @@index([orderId])
-  @@index([status])
-  @@map("order_status_history")
 }

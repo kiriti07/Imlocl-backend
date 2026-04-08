@@ -785,4 +785,108 @@ router.get('/live/delivery-partners', adminAuth, async (_req, res) => {
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LIVE CHAT
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /admin/chat/rooms — all rooms with unread count + last message
+router.get('/chat/rooms', adminAuth, async (_req, res) => {
+    try {
+      const rooms = await (prisma as any).chatMessage.groupBy({
+        by: ['roomId'],
+        _max: { createdAt: true, message: true, senderName: true, senderType: true },
+        _count: { id: true },
+        orderBy: { _max: { createdAt: 'desc' } },
+      });
+  
+      const withUnread = await Promise.all(rooms.map(async (r: any) => {
+        const unread = await (prisma as any).chatMessage.count({
+          where: { roomId: r.roomId, isRead: false, senderType: { not: 'AGENT' } },
+        });
+  
+        // Derive display name from roomId (e.g. customer-abc → look up customer)
+        let displayName = r.roomId;
+        let userType    = 'unknown';
+  
+        if (r.roomId.startsWith('customer-')) {
+          const customerId = r.roomId.replace('customer-', '');
+          const customer   = await prisma.customer.findUnique({ where: { id: customerId }, select: { fullName: true, phone: true } });
+          displayName = customer?.fullName ?? customerId;
+          userType    = 'customer';
+        } else if (r.roomId.startsWith('partner-')) {
+          const partnerId = r.roomId.replace('partner-', '');
+          const partner   = await prisma.partner.findUnique({ where: { id: partnerId }, select: { fullName: true, phone: true } });
+          displayName = partner?.fullName ?? partnerId;
+          userType    = 'partner';
+        }
+  
+        return {
+          roomId:       r.roomId,
+          displayName,
+          userType,
+          lastMessage:  r._max.message,
+          lastSender:   r._max.senderName,
+          lastSenderType: r._max.senderType,
+          lastAt:       r._max.createdAt,
+          totalMessages: r._count.id,
+          unread,
+        };
+      }));
+  
+      return res.json({ rooms: withUnread });
+    } catch (e: any) {
+      return res.status(500).json({ message: e?.message });
+    }
+  });
+  
+  // GET /admin/chat/rooms/:roomId/messages — full message history
+  router.get('/chat/rooms/:roomId/messages', adminAuth, async (req, res) => {
+    try {
+      const roomId = String(req.params.roomId);
+  
+      const messages = await (prisma as any).chatMessage.findMany({
+        where:   { roomId },
+        orderBy: { createdAt: 'asc' },
+        take:    100,
+      });
+  
+      // Mark all unread as read when agent opens the room
+      await (prisma as any).chatMessage.updateMany({
+        where: { roomId, isRead: false, senderType: { not: 'AGENT' } },
+        data:  { isRead: true },
+      });
+  
+      return res.json({ messages });
+    } catch (e: any) {
+      return res.status(500).json({ message: e?.message });
+    }
+  });
+  
+  // POST /admin/chat/rooms/:roomId/send — agent sends a message via REST
+  // (use this as fallback if socket is not available)
+  router.post('/chat/rooms/:roomId/send', adminAuth, async (req, res) => {
+    try {
+      const roomId    = String(req.params.roomId);
+      const { message } = req.body;
+      const admin     = (req as any).admin;
+  
+      if (!message?.trim()) return res.status(400).json({ message: 'message is required' });
+  
+      const saved = await (prisma as any).chatMessage.create({
+        data: {
+          roomId,
+          senderId:   admin.id,
+          senderType: 'AGENT',
+          senderName: admin.email,
+          message:    String(message).trim(),
+          isRead:     true,
+        },
+      });
+  
+      return res.json({ message: saved });
+    } catch (e: any) {
+      return res.status(500).json({ message: e?.message });
+    }
+  });
+
 export default router;
