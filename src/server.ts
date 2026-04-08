@@ -17,6 +17,7 @@ import fs from "fs";
 import trackingRoutes from './routes/tracking';
 import { GeocodingService } from './utils/geocoding';
 import otpRoutes from './routes/otp';
+import adminRouter from './routes/admin';
 
 const app = express();
 const prisma = new PrismaClient();
@@ -24,6 +25,8 @@ const geocoder = GeocodingService.getInstance();
 
 app.use(cors());
 app.use(express.json());
+
+app.use('/admin', adminRouter);
 
 app.use((req, res, next) => {
   const start = Date.now();

@@ -7,6 +7,18 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model AdminUser {
+  id           String    @id @default(uuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         String    @default("CUSTOMER_CARE_FULL")
+  createdAt    DateTime  @default(now())
+  lastLogin    DateTime?
+
+  @@map("AdminUser")
+}
+
 model Partner {
   id              String           @id @default(uuid())
   phone           String           @unique
