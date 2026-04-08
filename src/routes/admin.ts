@@ -328,28 +328,28 @@ router.get('/partners', adminAuth, async (req, res) => {
 
 router.post('/partners/:id/approve',   adminAuth, requireAdmin, async (req, res) => {
   try {
-    const p = await prisma.partner.update({ where: { id: req.params.id }, data: { status: PartnerStatus.APPROVED, isActive: true } });
+    const p = await prisma.partner.update({ where: { id: String(req.params.id) }, data: { status: PartnerStatus.APPROVED, isActive: true } });
     return res.json({ partner: p });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
 
 router.post('/partners/:id/reject',    adminAuth, requireAdmin, async (req, res) => {
   try {
-    const p = await prisma.partner.update({ where: { id: req.params.id }, data: { status: PartnerStatus.REJECTED, isActive: false } });
+    const p = await prisma.partner.update({ where: { id: String(req.params.id) }, data: { status: PartnerStatus.REJECTED, isActive: false } });
     return res.json({ partner: p });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
 
 router.post('/partners/:id/suspend',   adminAuth, requireAdmin, async (req, res) => {
   try {
-    const p = await prisma.partner.update({ where: { id: req.params.id }, data: { isActive: false } });
+    const p = await prisma.partner.update({ where: { id: String(req.params.id) }, data: { isActive: false } });
     return res.json({ partner: p });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
 
 router.post('/partners/:id/reinstate', adminAuth, requireAdmin, async (req, res) => {
   try {
-    const p = await prisma.partner.update({ where: { id: req.params.id }, data: { status: PartnerStatus.APPROVED, isActive: true } });
+    const p = await prisma.partner.update({ where: { id: String(req.params.id) }, data: { status: PartnerStatus.APPROVED, isActive: true } });
     return res.json({ partner: p });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
@@ -393,12 +393,12 @@ router.get('/customers', adminAuth, async (req, res) => {
 });
 
 router.post('/customers/:id/block',   adminAuth, async (req, res) => {
-  try { return res.json({ customer: await prisma.customer.update({ where: { id: req.params.id }, data: { isActive: false } }) }); }
+  try { return res.json({ customer: await prisma.customer.update({ where: { id: String(req.params.id) }, data: { isActive: false } }) }); }
   catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
 
 router.post('/customers/:id/unblock', adminAuth, async (req, res) => {
-  try { return res.json({ customer: await prisma.customer.update({ where: { id: req.params.id }, data: { isActive: true } }) }); }
+  try { return res.json({ customer: await prisma.customer.update({ where: { id: String(req.params.id) }, data: { isActive: true } }) }); }
   catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
 
@@ -454,7 +454,7 @@ router.get('/orders', adminAuth, async (req, res) => {
 
 router.get('/orders/:id', adminAuth, async (req, res) => {
   try {
-    const order = await prisma.customerOrder.findUnique({ where: { id: req.params.id }, include: { items: true, statusHistory: { orderBy: { createdAt: 'asc' } } } });
+    const order = await prisma.customerOrder.findUnique({ where: { id: String(req.params.id) }, include: { items: true, statusHistory: { orderBy: { createdAt: 'asc' } } } });
     if (!order) return res.status(404).json({ message: 'Not found' });
     return res.json({ order });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
@@ -462,7 +462,7 @@ router.get('/orders/:id', adminAuth, async (req, res) => {
 
 router.post('/orders/:id/cancel', adminAuth, async (req, res) => {
   try {
-    const o = await prisma.customerOrder.update({ where: { id: req.params.id }, data: { orderStatus: 'CANCELLED', statusHistory: { create: { status: 'CANCELLED', note: req.body.reason ?? 'Cancelled by admin', actorType: 'ADMIN' } } } });
+    const o = await prisma.customerOrder.update({ where: { id: String(req.params.id) }, data: { orderStatus: 'CANCELLED', statusHistory: { create: { status: 'CANCELLED', note: req.body.reason ?? 'Cancelled by admin', actorType: 'ADMIN' } } } });
     return res.json({ order: o });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
@@ -470,7 +470,7 @@ router.post('/orders/:id/cancel', adminAuth, async (req, res) => {
 router.post('/orders/:id/refund', adminAuth, async (req, res) => {
   try {
     const { amount, reason = 'Refund by admin' } = req.body;
-    const o = await prisma.customerOrder.update({ where: { id: req.params.id }, data: { paymentStatus: 'REFUNDED', statusHistory: { create: { status: 'REFUNDED', note: `Refund ₹${amount}: ${reason}`, actorType: 'ADMIN' } } } });
+    const o = await prisma.customerOrder.update({ where: { id: String(req.params.id) }, data: { paymentStatus: 'REFUNDED', statusHistory: { create: { status: 'REFUNDED', note: `Refund ₹${amount}: ${reason}`, actorType: 'ADMIN' } } } });
     return res.json({ order: o });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
@@ -580,7 +580,7 @@ router.post('/coupons', adminAuth, requireAdmin, async (req, res) => {
 
 router.post('/coupons/:id/disable', adminAuth, requireAdmin, async (req, res) => {
   try {
-    const c = await prisma.coupon.update({ where: { id: req.params.id }, data: { is_active: false } });
+    const c = await prisma.coupon.update({ where: { id: String(req.params.id) as any }, data: { is_active: false } });
     return res.json({ coupon: c });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
@@ -651,7 +651,7 @@ router.get('/tickets', adminAuth, async (req, res) => {
 
 router.get('/tickets/:id', adminAuth, async (req, res) => {
   try {
-    const orderId = req.params.id.replace('ticket-', '');
+    const orderId = String(req.params.id).replace('ticket-', '');
     const order   = await prisma.customerOrder.findFirst({
       where: { id: orderId },
       include: { statusHistory: { orderBy: { createdAt: 'asc' } }, items: true },
@@ -690,7 +690,7 @@ router.get('/tickets/:id', adminAuth, async (req, res) => {
 router.post('/tickets/:id/reply', adminAuth, async (req, res) => {
   try {
     const { message, isInternal = false } = req.body;
-    const orderId = req.params.id.replace('ticket-', '');
+    const orderId = String(req.params.id).replace('ticket-', '');
     await prisma.orderStatusHistory.create({
       data: { orderId, status: 'AGENT_REPLY', note: `${isInternal ? '[Internal] ' : ''}${message}`, actorType: 'ADMIN', actorId: (req as any).admin?.id },
     });
@@ -700,7 +700,7 @@ router.post('/tickets/:id/reply', adminAuth, async (req, res) => {
 
 router.post('/tickets/:id/resolve', adminAuth, async (req, res) => {
   try {
-    const orderId = req.params.id.replace('ticket-', '');
+    const orderId = String(req.params.id).replace('ticket-', '');
     await prisma.orderStatusHistory.create({ data: { orderId, status: 'TICKET_RESOLVED', note: 'Resolved by support agent', actorType: 'ADMIN' } });
     return res.json({ ok: true });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
@@ -708,7 +708,7 @@ router.post('/tickets/:id/resolve', adminAuth, async (req, res) => {
 
 router.post('/tickets/:id/escalate', adminAuth, async (req, res) => {
   try {
-    const orderId = req.params.id.replace('ticket-', '');
+    const orderId = String(req.params.id).replace('ticket-', '');
     await prisma.orderStatusHistory.create({ data: { orderId, status: 'TICKET_ESCALATED', note: `Escalated: ${req.body.reason}`, actorType: 'ADMIN' } });
     return res.json({ ok: true });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
@@ -747,14 +747,14 @@ router.put('/users/:id', adminAuth, requireAdmin, async (req, res) => {
     if (req.body.name)     data.name = String(req.body.name).trim();
     if (req.body.role)     data.role = String(req.body.role);
     if (req.body.password) data.passwordHash = await bcrypt.hash(req.body.password, 10);
-    const user = await (prisma as any).adminUser.update({ where: { id: req.params.id }, data, select: { id: true, name: true, email: true, role: true } });
+    const user = await (prisma as any).adminUser.update({ where: { id: String(req.params.id) }, data, select: { id: true, name: true, email: true, role: true } });
     return res.json({ user });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
 
 router.delete('/users/:id', adminAuth, requireAdmin, async (req, res) => {
   try {
-    await (prisma as any).adminUser.delete({ where: { id: req.params.id } });
+    await (prisma as any).adminUser.delete({ where: { id: String(req.params.id) } });
     return res.json({ ok: true });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
