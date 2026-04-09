@@ -392,6 +392,39 @@ router.get('/customers', adminAuth, async (req, res) => {
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
 
+router.get('/customers/:id', adminAuth, async (req, res) => {
+  try {
+    const c = await prisma.customer.findUnique({
+      where: { id: String(req.params.id) },
+      include: { addresses: { where: { isDefault: true }, take: 1 } },
+    });
+    if (!c) return res.status(404).json({ message: 'Customer not found' });
+
+    const agg = await prisma.customerOrder.aggregate({
+      where: { customerPhone: c.phone, orderStatus: { in: ['COMPLETED', 'DELIVERED', 'CASH_COLLECTED'] } },
+      _count: { id: true },
+      _sum: { totalAmount: true },
+    });
+    const last = await prisma.customerOrder.findFirst({
+      where: { customerPhone: c.phone },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+
+    return res.json({
+      customer: {
+        id: c.id, name: c.fullName, phone: c.phone, email: c.email,
+        city: c.addresses[0]?.city ?? null,
+        isActive: c.isActive,
+        createdAt: c.createdAt,
+        lastOrderAt: last?.createdAt ?? null,
+        totalOrders: agg._count.id ?? 0,
+        totalSpend: Math.round(toNum(agg._sum.totalAmount)),
+      },
+    });
+  } catch (e: any) { return res.status(500).json({ message: e?.message }); }
+});
+
 router.post('/customers/:id/block',   adminAuth, async (req, res) => {
   try { return res.json({ customer: await prisma.customer.update({ where: { id: String(req.params.id) }, data: { isActive: false } }) }); }
   catch (e: any) { return res.status(500).json({ message: e?.message }); }
