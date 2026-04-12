@@ -354,6 +354,198 @@ router.post('/partners/:id/reinstate', adminAuth, requireAdmin, async (req, res)
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
 
+
+// GET /admin/partners/:id/detail — full partner analytics
+router.get('/partners/:id/detail', adminAuth, async (req, res) => {
+  try {
+    const id = String(req.params.id);
+
+    const partner = await prisma.partner.findUnique({
+      where: { id },
+      include: {
+        meatShop:        { include: { items: true } },
+        organicShop:     { include: { categories: { include: { items: true } } } },
+        laundryShop:     true,
+        deliveryPartner: true,
+      },
+    });
+    if (!partner) return res.status(404).json({ message: 'Partner not found' });
+
+    const storeId    = partner.meatShop?.id ?? partner.organicShop?.id ?? partner.laundryShop?.id;
+    const isDelivery = !!partner.deliveryPartner;
+
+    if (isDelivery) {
+      const dp = partner.deliveryPartner!;
+
+      // Use CustomerOrder to derive delivery stats since Delivery model
+      // uses partnerId and lacks createdAt/distanceKm fields
+      const deliveryOrders = await prisma.customerOrder.findMany({
+        where: {
+          orderStatus: { in: ['COMPLETED','DELIVERED','CASH_COLLECTED','CANCELLED','FAILED','STORE_REJECTED','PICKED_UP','DELIVERY_ASSIGNED','ON_THE_WAY','PLACED','STORE_ACCEPTED','READY_FOR_PICKUP'] },
+        },
+        select: {
+          id: true, orderNumber: true, orderStatus: true,
+          createdAt: true, deliveredAt: true, totalAmount: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      });
+
+      // Filter orders that went through this delivery partner via Delivery table
+      const dpDeliveries = await prisma.delivery.findMany({
+        where: { partnerId: dp.id },
+        select: { id: true, status: true, pickedUpAt: true, deliveredAt: true, orderId: true },
+        orderBy: { deliveredAt: 'desc' },
+      });
+
+      const completed = dpDeliveries.filter(d => d.status === 'DELIVERED');
+      const cancelled = dpDeliveries.filter(d => ['CANCELLED','FAILED'].includes(String(d.status)));
+
+      const onTime = completed.filter(d => {
+        if (!d.pickedUpAt || !d.deliveredAt) return false;
+        return (new Date(d.deliveredAt).getTime() - new Date(d.pickedUpAt).getTime()) / 60000 <= 45;
+      });
+
+      const times = completed
+        .filter(d => d.pickedUpAt && d.deliveredAt)
+        .map(d => (new Date(d.deliveredAt!).getTime() - new Date(d.pickedUpAt!).getTime()) / 60000);
+      const avgMins = times.length ? Math.round(times.reduce((s, t) => s + t, 0) / times.length) : null;
+
+      // Monthly from deliveredAt — use pickedUpAt or deliveredAt for grouping
+      const monthlyMap: Record<string, number> = {};
+      for (const d of dpDeliveries) {
+        const dateField = d.deliveredAt ?? d.pickedUpAt;
+        if (!dateField) continue;
+        const key = new Date(dateField).toISOString().slice(0, 7);
+        monthlyMap[key] = (monthlyMap[key] ?? 0) + 1;
+      }
+      const monthly = Object.entries(monthlyMap)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .slice(-6)
+        .map(([month, count]) => ({ month, count }));
+
+      const today           = startOfDay();
+      const todayDeliveries = dpDeliveries.filter(d => {
+        const dateField = d.deliveredAt ?? d.pickedUpAt;
+        return dateField && new Date(dateField) >= today;
+      });
+
+      return res.json({
+        partner: {
+          id: partner.id, name: partner.fullName, phone: partner.phone,
+          email: partner.email, city: partner.city, isActive: partner.isActive,
+          status: partner.status, createdAt: partner.createdAt,
+          vehicleType: dp.vehicleType, rating: dp.rating,
+          isAvailable: dp.isAvailable, currentOrders: dp.currentOrders,
+        },
+        type: 'DELIVERY',
+        stats: {
+          totalDeliveries:  dpDeliveries.length,
+          completedToday:   todayDeliveries.filter(d => d.status === 'DELIVERED').length,
+          totalToday:       todayDeliveries.length,
+          completedAll:     completed.length,
+          cancelledAll:     cancelled.length,
+          onTimeCount:      onTime.length,
+          onTimePct:        completed.length ? Math.round((onTime.length / completed.length) * 100) : 0,
+          avgDeliveryMins:  avgMins,
+          totalDistanceKm:  0, // distanceKm not in your Delivery model
+          rating:           toNum(dp.rating),
+        },
+        monthly,
+        recentDeliveries: dpDeliveries.slice(0, 10).map(d => ({
+          id: d.id, status: d.status,
+          createdAt: d.pickedUpAt ?? d.deliveredAt ?? new Date(),
+          deliveredAt: d.deliveredAt, distanceKm: 0,
+        })),
+      });
+    }
+
+    // Store partner
+    const orders = storeId ? await prisma.customerOrder.findMany({
+      where: { storeId },
+      select: {
+        id: true, orderNumber: true, orderStatus: true, totalAmount: true,
+        platformFee: true, discount: true, createdAt: true, deliveredAt: true,
+        items: { select: { itemName: true, quantity: true, price: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    }) : [];
+
+    const completed     = orders.filter(o => ['COMPLETED','DELIVERED','CASH_COLLECTED'].includes(o.orderStatus));
+    const cancelled     = orders.filter(o => ['CANCELLED','STORE_REJECTED'].includes(o.orderStatus));
+    const totalRev      = completed.reduce((s, o) => s + toNum(o.totalAmount) - toNum(o.platformFee), 0);
+    const totalGmv      = completed.reduce((s, o) => s + toNum(o.totalAmount), 0);
+
+    const monthlyMap: Record<string, { gmv: number; orders: number }> = {};
+    for (const o of completed) {
+      const key = o.createdAt.toISOString().slice(0, 7);
+      const ex  = monthlyMap[key] ?? { gmv: 0, orders: 0 };
+      monthlyMap[key] = { gmv: ex.gmv + toNum(o.totalAmount), orders: ex.orders + 1 };
+    }
+    const monthly = Object.entries(monthlyMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-6)
+      .map(([month, data]) => ({ month, ...data }));
+
+    const itemMap: Record<string, { count: number; revenue: number }> = {};
+    for (const o of completed) {
+      for (const item of o.items) {
+        const ex = itemMap[item.itemName] ?? { count: 0, revenue: 0 };
+        itemMap[item.itemName] = {
+          count:   ex.count + toNum(item.quantity),
+          revenue: ex.revenue + toNum(item.price) * toNum(item.quantity),
+        };
+      }
+    }
+    const topItems = Object.entries(itemMap)
+      .sort(([, a], [, b]) => b.count - a.count)
+      .slice(0, 8)
+      .map(([name, data]) => ({ name, ...data }));
+
+    const today        = startOfDay();
+    const week         = new Date(Date.now() - 7 * 86400000);
+    const month        = startOfMonth();
+    const ordersToday  = orders.filter(o => new Date(o.createdAt) >= today);
+    const ordersWeek   = orders.filter(o => new Date(o.createdAt) >= week);
+    const ordersMonth  = orders.filter(o => new Date(o.createdAt) >= month);
+
+    let totalItems = 0;
+    if (partner.meatShop)    totalItems = partner.meatShop.items.length;
+    if (partner.organicShop) totalItems = partner.organicShop.categories.reduce((s, c) => s + c.items.length, 0);
+
+    return res.json({
+      partner: {
+        id: partner.id, name: partner.fullName, phone: partner.phone,
+        email: partner.email, city: partner.city, isActive: partner.isActive,
+        status: partner.status, role: partner.role, createdAt: partner.createdAt,
+        businessName: partner.businessName,
+      },
+      type: 'STORE',
+      stats: {
+        totalOrders:     orders.length,
+        completedOrders: completed.length,
+        cancelledOrders: cancelled.length,
+        cancelRate:      orders.length ? Math.round((cancelled.length / orders.length) * 100) : 0,
+        totalRevenue:    Math.round(totalRev),
+        totalGmv:        Math.round(totalGmv),
+        avgOrderValue:   completed.length ? Math.round(totalGmv / completed.length) : 0,
+        ordersToday:     ordersToday.length,
+        ordersWeek:      ordersWeek.length,
+        ordersMonth:     ordersMonth.length,
+        totalItems,
+      },
+      monthly,
+      topItems,
+      recentOrders: orders.slice(0, 10).map(o => ({
+        id: o.id, orderNumber: o.orderNumber, orderStatus: o.orderStatus,
+        totalAmount: toNum(o.totalAmount), createdAt: o.createdAt,
+      })),
+    });
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CUSTOMERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -392,37 +584,94 @@ router.get('/customers', adminAuth, async (req, res) => {
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
 
-router.get('/customers/:id', adminAuth, async (req, res) => {
-  try {
-    const c = await prisma.customer.findUnique({
-      where: { id: String(req.params.id) },
-      include: { addresses: { where: { isDefault: true }, take: 1 } },
-    });
-    if (!c) return res.status(404).json({ message: 'Customer not found' });
 
-    const agg = await prisma.customerOrder.aggregate({
-      where: { customerPhone: c.phone, orderStatus: { in: ['COMPLETED', 'DELIVERED', 'CASH_COLLECTED'] } },
-      _count: { id: true },
-      _sum: { totalAmount: true },
+// GET /admin/customers/:id/detail — full customer analytics
+router.get('/customers/:id/detail', adminAuth, async (req, res) => {
+  try {
+    const id = String(req.params.id);
+
+    const customer = await prisma.customer.findUnique({
+      where: { id },
+      include: { addresses: true },
     });
-    const last = await prisma.customerOrder.findFirst({
-      where: { customerPhone: c.phone },
+    if (!customer) return res.status(404).json({ message: 'Customer not found' });
+
+    const allOrders = await prisma.customerOrder.findMany({
+      where: { customerPhone: customer.phone },
       orderBy: { createdAt: 'desc' },
-      select: { createdAt: true },
+      select: {
+        id: true, orderNumber: true, orderStatus: true, paymentStatus: true,
+        totalAmount: true, discount: true, platformFee: true,
+        serviceType: true, storeName: true, paymentMethod: true,
+        createdAt: true, deliveredAt: true, isScheduled: true,
+      },
     });
+
+    const completed = allOrders.filter(o => ['COMPLETED','DELIVERED','CASH_COLLECTED'].includes(o.orderStatus));
+    const cancelled = allOrders.filter(o => ['CANCELLED','STORE_REJECTED'].includes(o.orderStatus));
+    const refunded  = allOrders.filter(o => o.paymentStatus === 'REFUNDED');
+    const failed    = allOrders.filter(o => o.orderStatus === 'FAILED');
+
+    const totalSpend    = completed.reduce((s, o) => s + toNum(o.totalAmount), 0);
+    const totalDiscount = allOrders.reduce((s, o) => s + toNum(o.discount), 0);
+
+    const byService: Record<string, number> = {};
+    for (const o of allOrders) {
+      byService[o.serviceType ?? 'OTHER'] = (byService[o.serviceType ?? 'OTHER'] ?? 0) + 1;
+    }
+
+    const monthlyMap: Record<string, number> = {};
+    for (const o of allOrders) {
+      const key = o.createdAt.toISOString().slice(0, 7);
+      monthlyMap[key] = (monthlyMap[key] ?? 0) + 1;
+    }
+    const monthly = Object.entries(monthlyMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-6)
+      .map(([month, count]) => ({ month, count }));
+
+    const storeMap: Record<string, number> = {};
+    for (const o of allOrders) {
+      if (o.storeName) storeMap[o.storeName] = (storeMap[o.storeName] ?? 0) + 1;
+    }
+    const favouriteStores = Object.entries(storeMap)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([name, count]) => ({ name, count }));
+
+    const deliveryTimes = completed
+      .filter(o => o.deliveredAt)
+      .map(o => (new Date(o.deliveredAt!).getTime() - new Date(o.createdAt).getTime()) / 60000);
+    const avgDeliveryMins = deliveryTimes.length
+      ? Math.round(deliveryTimes.reduce((s, t) => s + t, 0) / deliveryTimes.length)
+      : null;
 
     return res.json({
       customer: {
-        id: c.id, name: c.fullName, phone: c.phone, email: c.email,
-        city: c.addresses[0]?.city ?? null,
-        isActive: c.isActive,
-        createdAt: c.createdAt,
-        lastOrderAt: last?.createdAt ?? null,
-        totalOrders: agg._count.id ?? 0,
-        totalSpend: Math.round(toNum(agg._sum.totalAmount)),
+        id: customer.id, name: customer.fullName, phone: customer.phone,
+        email: customer.email, isActive: customer.isActive,
+        createdAt: customer.createdAt, addresses: customer.addresses,
       },
+      stats: {
+        totalOrders:     allOrders.length,
+        completedOrders: completed.length,
+        cancelledOrders: cancelled.length,
+        refundedOrders:  refunded.length,
+        failedOrders:    failed.length,
+        totalSpend:      Math.round(totalSpend),
+        totalDiscount:   Math.round(totalDiscount),
+        avgOrderValue:   completed.length ? Math.round(totalSpend / completed.length) : 0,
+        avgDeliveryMins,
+        scheduledOrders: allOrders.filter(o => o.isScheduled).length,
+      },
+      byService,
+      monthly,
+      favouriteStores,
+      recentOrders: allOrders.slice(0, 10),
     });
-  } catch (e: any) { return res.status(500).json({ message: e?.message }); }
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message });
+  }
 });
 
 router.post('/customers/:id/block',   adminAuth, async (req, res) => {
@@ -817,109 +1066,5 @@ router.get('/live/delivery-partners', adminAuth, async (_req, res) => {
     });
   } catch (e: any) { return res.status(500).json({ message: e?.message }); }
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LIVE CHAT
-// ─────────────────────────────────────────────────────────────────────────────
-
-// GET /admin/chat/rooms — all rooms with unread count + last message
-router.get('/chat/rooms', adminAuth, async (_req, res) => {
-    try {
-      const rooms = await (prisma as any).chatMessage.groupBy({
-        by: ['roomId'],
-        _max: { createdAt: true, message: true, senderName: true, senderType: true },
-        _count: { id: true },
-        orderBy: { _max: { createdAt: 'desc' } },
-      });
-  
-      const withUnread = await Promise.all(rooms.map(async (r: any) => {
-        const unread = await (prisma as any).chatMessage.count({
-          where: { roomId: r.roomId, isRead: false, senderType: { not: 'AGENT' } },
-        });
-  
-        // Derive display name from roomId (e.g. customer-abc → look up customer)
-        let displayName = r.roomId;
-        let userType    = 'unknown';
-  
-        if (r.roomId.startsWith('customer-')) {
-          const customerId = r.roomId.replace('customer-', '');
-          const customer   = await prisma.customer.findUnique({ where: { id: customerId }, select: { fullName: true, phone: true } });
-          displayName = customer?.fullName ?? customerId;
-          userType    = 'customer';
-        } else if (r.roomId.startsWith('partner-')) {
-          const partnerId = r.roomId.replace('partner-', '');
-          const partner   = await prisma.partner.findUnique({ where: { id: partnerId }, select: { fullName: true, phone: true } });
-          displayName = partner?.fullName ?? partnerId;
-          userType    = 'partner';
-        }
-  
-        return {
-          roomId:       r.roomId,
-          displayName,
-          userType,
-          lastMessage:  r._max.message,
-          lastSender:   r._max.senderName,
-          lastSenderType: r._max.senderType,
-          lastAt:       r._max.createdAt,
-          totalMessages: r._count.id,
-          unread,
-        };
-      }));
-  
-      return res.json({ rooms: withUnread });
-    } catch (e: any) {
-      return res.status(500).json({ message: e?.message });
-    }
-  });
-  
-  // GET /admin/chat/rooms/:roomId/messages — full message history
-  router.get('/chat/rooms/:roomId/messages', adminAuth, async (req, res) => {
-    try {
-      const roomId = String(req.params.roomId);
-  
-      const messages = await (prisma as any).chatMessage.findMany({
-        where:   { roomId },
-        orderBy: { createdAt: 'asc' },
-        take:    100,
-      });
-  
-      // Mark all unread as read when agent opens the room
-      await (prisma as any).chatMessage.updateMany({
-        where: { roomId, isRead: false, senderType: { not: 'AGENT' } },
-        data:  { isRead: true },
-      });
-  
-      return res.json({ messages });
-    } catch (e: any) {
-      return res.status(500).json({ message: e?.message });
-    }
-  });
-  
-  // POST /admin/chat/rooms/:roomId/send — agent sends a message via REST
-  // (use this as fallback if socket is not available)
-  router.post('/chat/rooms/:roomId/send', adminAuth, async (req, res) => {
-    try {
-      const roomId    = String(req.params.roomId);
-      const { message } = req.body;
-      const admin     = (req as any).admin;
-  
-      if (!message?.trim()) return res.status(400).json({ message: 'message is required' });
-  
-      const saved = await (prisma as any).chatMessage.create({
-        data: {
-          roomId,
-          senderId:   admin.id,
-          senderType: 'AGENT',
-          senderName: admin.email,
-          message:    String(message).trim(),
-          isRead:     true,
-        },
-      });
-  
-      return res.json({ message: saved });
-    } catch (e: any) {
-      return res.status(500).json({ message: e?.message });
-    }
-  });
 
 export default router;
