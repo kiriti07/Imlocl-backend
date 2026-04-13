@@ -18,10 +18,13 @@ import trackingRoutes from './routes/tracking';
 import { GeocodingService } from './utils/geocoding';
 import otpRoutes from './routes/otp';
 import adminRouter from './routes/admin';
+import referralRouter from './routes/referral';
+
 
 const app = express();
 const prisma = new PrismaClient();
 const geocoder = GeocodingService.getInstance();
+
 
 app.use(cors());
 app.use(express.json());
@@ -41,6 +44,7 @@ app.use((req, res, next) => {
 
 app.use('/api', trackingRoutes);
 app.use('/api/otp', otpRoutes);
+app.use('/api/referral', referralRouter);
 
 const PORT = Number(process.env.PORT || 8080);
 
@@ -4598,6 +4602,106 @@ app.delete("/api/designer/items/:id", async (req, res) => {
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
+
+// ─── Profile Image Upload ──────────────────────────────────────────────────────
+app.post('/partner/profile/image', upload.single('image'), async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    if (!token) return res.status(401).json({ message: 'Missing token' });
+
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET ?? 'secret') as any;
+    const partner = await prisma.partner.findUnique({ where: { id: payload.id } });
+    if (!partner) return res.status(404).json({ message: 'Partner not found' });
+    if (!req.file) return res.status(400).json({ message: 'No image file provided' });
+
+    // Use the meat helper directly — it accepts (buffer, shopName, itemName, filename)
+    // We repurpose it for profile images using partner id as identifiers
+    const imageUrl = await uploadMeatItemImage(
+      req.file.buffer,
+      'partners',
+      partner.id,
+      `profile-${partner.id}.jpg`
+    );
+
+    await (prisma.partner as any).update({
+      where: { id: partner.id },
+      data:  { profileImage: imageUrl.url },
+    });
+
+    return res.json({ imageUrl: imageUrl.url });
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message });
+  }
+});
+
+app.delete('/partner/profile/image', async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET ?? 'secret') as any;
+    await (prisma.partner as any).update({
+      where: { id: payload.id },
+      data:  { profileImage: null },
+    });
+    return res.json({ ok: true });
+  } catch (e: any) { return res.status(500).json({ message: e?.message }); }
+});
+
+// ─── Meat Shop Banner Image Upload ────────────────────────────────────────────
+app.post('/meatshop/shop-image', upload.single('image'), async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    if (!token) return res.status(401).json({ message: 'Missing token' });
+
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET ?? 'secret') as any;
+    const partner = await prisma.partner.findUnique({ where: { id: payload.id } });
+    if (!partner) return res.status(404).json({ message: 'Partner not found' });
+    if (partner.role !== PartnerRole.MEAT_PARTNER) {
+      return res.status(403).json({ message: 'Meat store partners only' });
+    }
+
+    const meatShop = await prisma.meatShop.findFirst({ where: { partnerId: partner.id } });
+    if (!meatShop) return res.status(404).json({ message: 'Meat shop not found' });
+    if (!req.file) return res.status(400).json({ message: 'No image file provided' });
+
+    // uploadMeatItemImage(buffer, shopName, itemName, originalFilename)
+    const result = await uploadMeatItemImage(
+      req.file.buffer,
+      partner.businessName ?? 'shop',
+      'banner',
+      `banner-${meatShop.id}.jpg`
+    );
+
+    await (prisma.meatShop as any).update({
+      where: { id: meatShop.id },
+      data:  { shopImage: result.url },
+    });
+
+    return res.json({ imageUrl: result.url });
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message });
+  }
+});
+
+app.delete('/meatshop/shop-image', async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET ?? 'secret') as any;
+    const partner = await prisma.partner.findUnique({ where: { id: payload.id } });
+    if (!partner) return res.status(404).json({ message: 'Partner not found' });
+    const meatShop = await prisma.meatShop.findFirst({ where: { partnerId: partner.id } });
+    if (!meatShop) return res.status(404).json({ message: 'Meat shop not found' });
+    await (prisma.meatShop as any).update({
+      where: { id: meatShop.id },
+      data:  { shopImage: null },
+    });
+    return res.json({ ok: true });
+  } catch (e: any) { return res.status(500).json({ message: e?.message }); }
+});
+
 
 // Update the multi-image upload endpoint
 app.post("/api/designer/items/:id/images", upload.array("images", 8), async (req, res) => {
