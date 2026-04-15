@@ -19,7 +19,7 @@ import { GeocodingService } from './utils/geocoding';
 import otpRoutes from './routes/otp';
 import adminRouter from './routes/admin';
 import referralRouter from './routes/referral';
-
+import { sendPushNotification } from './utils/pushNotifications';
 
 const app = express();
 const prisma = new PrismaClient();
@@ -475,6 +475,17 @@ app.post("/api/orders", async (req, res) => {
       return orderRecord;
     });
 
+    // 🔔 Push: notify store partner of new order
+    const storePartner = await prisma.partner.findUnique({
+      where: { id: store.partner.id },
+      select: { expoPushToken: true },
+    });
+    await sendPushNotification((storePartner as any)?.expoPushToken, {
+      title: '🛒 New Order Received!',
+      body: `Order #${createdOrder.orderNumber} has been placed. ₹${createdOrder.totalAmount}`,
+      data: { orderId: createdOrder.id, screen: 'orders' },
+    });
+
     io.to(`store-${store.id}`).emit("store-new-order", {
       orderId: createdOrder.id,
       orderNumber: createdOrder.orderNumber,
@@ -641,6 +652,44 @@ app.get("/api/customer/orders/:id", async (req, res) => {
   }
 });
 
+// ── Push Token Registration ───────────────────────────────────────────────────
+app.post('/api/customer/push-token', async (req, res) => {
+  try {
+    const auth = await customerAuthRequiredBasic(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    const { expoPushToken } = req.body;
+    if (!expoPushToken) return res.status(400).json({ message: 'expoPushToken is required' });
+
+    await (prisma.customer as any).update({
+      where: { id: auth.customer.id },
+      data: { expoPushToken: String(expoPushToken) },
+    });
+
+    return res.json({ success: true });
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message ?? 'Server error' });
+  }
+});
+
+app.post('/api/partner/push-token', async (req, res) => {
+  try {
+    const auth = await authRequired(req);
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
+
+    const { expoPushToken } = req.body;
+    if (!expoPushToken) return res.status(400).json({ message: 'expoPushToken is required' });
+
+    await (prisma.partner as any).update({
+      where: { id: auth.partner.id },
+      data: { expoPushToken: String(expoPushToken) },
+    });
+
+    return res.json({ success: true });
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message ?? 'Server error' });
+  }
+});
 
 app.post('/customer/orders/:id/rate', async (req, res) => {
   try {
@@ -2822,6 +2871,16 @@ app.put("/api/deliveries/:id/status", async (req, res) => {
               },
             },
           });
+          // 🔔 Push: notify customer order is on the way
+          const pickedUpCustomer = await prisma.customer.findFirst({
+            where: { phone: existingDelivery.customerPhone ?? '' },
+            select: { expoPushToken: true },
+          });
+          await sendPushNotification((pickedUpCustomer as any)?.expoPushToken, {
+            title: '🚴 Order On the Way!',
+            body: 'Your order has been picked up and is heading to you.',
+            data: { orderId: updatedDelivery.orderId ?? '', screen: 'tracking' },
+          });
         }
 
         if (status === "DELIVERED") {
@@ -2839,6 +2898,17 @@ app.put("/api/deliveries/:id/status", async (req, res) => {
                 },
               },
             },
+          });
+
+          // 🔔 Push: notify customer order is delivered
+          const deliveredCustomer = await prisma.customer.findFirst({
+            where: { phone: existingDelivery.customerPhone ?? '' },
+            select: { expoPushToken: true },
+          });
+          await sendPushNotification((deliveredCustomer as any)?.expoPushToken, {
+            title: '📦 Order Delivered!',
+            body: 'Your order has been delivered. Enjoy!',
+            data: { orderId: updatedDelivery.orderId ?? '', screen: 'orders' },
           });
 
           await tx.deliveryPartner.update({
@@ -5190,6 +5260,17 @@ app.put("/api/orders/:id/store-accept", async (req, res) => {
         },
       },
       include: { items: true },
+    });
+
+    // 🔔 Push: notify customer order was accepted
+    const acceptedCustomer = await prisma.customer.findFirst({
+      where: { phone: updated.customerPhone },
+      select: { expoPushToken: true },
+    });
+    await sendPushNotification((acceptedCustomer as any)?.expoPushToken, {
+      title: '✅ Order Accepted!',
+      body: 'Your order has been accepted and is being prepared.',
+      data: { orderId: updated.id, screen: 'orders' },
     });
 
     io.to(`order-${updated.id}`).emit("order-status-updated", {

@@ -46,6 +46,7 @@ model Partner {
   laundryShop     LaundryShop?
   meatShop        MeatShop?
   organicShop     OrganicShop?
+  expoPushToken   String?
 
   @@map("Partner")
 }
@@ -507,6 +508,7 @@ model Customer {
   passwordHash  String
   walletBalance Decimal?          @default(0) @db.Decimal(10, 2)
   addresses     CustomerAddress[]
+  expoPushToken   String?
 
   @@map("Customer")
 }
