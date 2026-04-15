@@ -4703,6 +4703,136 @@ app.delete('/meatshop/shop-image', async (req, res) => {
 });
 
 
+// ── POST /meatshop/toggle — open or close the store ──────────────────────────
+app.post('/meatshop/toggle', async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    if (!token) return res.status(401).json({ message: 'Missing token' });
+
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET ?? 'secret') as any;
+
+    const partner = await prisma.partner.findUnique({ where: { id: payload.id } });
+    if (!partner) return res.status(404).json({ message: 'Partner not found' });
+    if (partner.role !== 'MEAT_PARTNER') return res.status(403).json({ message: 'Meat partners only' });
+
+    const { isOpen } = req.body;
+    if (typeof isOpen !== 'boolean') return res.status(400).json({ message: 'isOpen (boolean) required' });
+
+    const meatShop = await prisma.meatShop.findFirst({ where: { partnerId: partner.id } });
+    if (!meatShop) return res.status(404).json({ message: 'Meat shop not found' });
+
+    const updated = await (prisma.meatShop as any).update({
+      where: { id: meatShop.id },
+      data:  { isOpen },
+    });
+
+    return res.json({ ok: true, isOpen: updated.isOpen });
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message });
+  }
+});
+
+// ── GET /meatshop/me — shop info + items + stats ──────────────────────────────
+// (If you don't already have this endpoint, add it)
+app.get('/meatshop/me', async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET ?? 'secret') as any;
+
+    const meatShop = await prisma.meatShop.findFirst({
+      where: { partnerId: payload.id },
+      include: { items: true },
+    });
+    if (!meatShop) return res.status(404).json({ message: 'Meat shop not found' });
+
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const todayOrders = await prisma.customerOrder.findMany({
+      where: { storeId: meatShop.id, createdAt: { gte: today } },
+      select: { orderStatus: true, totalAmount: true },
+    });
+
+    const earned = todayOrders
+      .filter(o => ['COMPLETED', 'DELIVERED', 'CASH_COLLECTED'].includes(o.orderStatus))
+      .reduce((s, o) => s + Number(o.totalAmount ?? 0), 0);
+
+    return res.json({
+      shop: {
+        id:       meatShop.id,
+        shopName: (meatShop as any).shopName ?? (meatShop as any).name,
+        isOpen:   (meatShop as any).isOpen ?? true,
+        shopImage:(meatShop as any).shopImage ?? null,
+      },
+      items: meatShop.items,
+      stats: {
+        totalItems:    meatShop.items.length,
+        todaysOrders:  todayOrders.length,
+        pendingOrders: todayOrders.filter(o => ['PLACED', 'STORE_ACCEPTED'].includes(o.orderStatus)).length,
+        earningsToday: Math.round(earned),
+      },
+    });
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message });
+  }
+});
+
+// ── PUT /meatshop/items/:id — update item stock / availability ────────────────
+app.put('/meatshop/items/:id', async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    const jwt = require('jsonwebtoken');
+    jwt.verify(token, process.env.JWT_SECRET ?? 'secret');
+
+    const { inStock, stock, name, price, unit, category } = req.body;
+    const item = await (prisma as any).meatItem.update({
+      where: { id: req.params.id },
+      data: {
+        ...(typeof inStock === 'boolean' ? { inStock } : {}),
+        ...(stock !== undefined ? { stock: Number(stock) } : {}),
+        ...(name !== undefined ? { name } : {}),
+        ...(price !== undefined ? { price: Number(price) } : {}),
+        ...(unit !== undefined ? { unit } : {}),
+        ...(category !== undefined ? { category } : {}),
+      },
+    });
+    return res.json({ item });
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message });
+  }
+});
+
+// ── POST /meatshop/items — add new item ───────────────────────────────────────
+app.post('/meatshop/items', async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET ?? 'secret') as any;
+
+    const meatShop = await prisma.meatShop.findFirst({ where: { partnerId: payload.id } });
+    if (!meatShop) return res.status(404).json({ message: 'Shop not found' });
+
+    const { name, price, unit, stock, category, inStock = true } = req.body;
+    if (!name || price === undefined) return res.status(400).json({ message: 'name and price required' });
+
+    const item = await (prisma as any).meatItem.create({
+      data: {
+        meatShopId: meatShop.id,
+        name:       String(name),
+        price:      Number(price),
+        unit:       String(unit ?? 'kg'),
+        inStock:    Boolean(inStock),
+        ...(stock !== undefined ? { stock: Number(stock) } : {}),
+        ...(category ? { category: String(category) } : {}),
+      },
+    });
+    return res.json({ item });
+  } catch (e: any) {
+    return res.status(500).json({ message: e?.message });
+  }
+});
+
+
 // Update the multi-image upload endpoint
 app.post("/api/designer/items/:id/images", upload.array("images", 8), async (req, res) => {
   try {
