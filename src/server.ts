@@ -641,6 +641,125 @@ app.get("/api/customer/orders/:id", async (req, res) => {
   }
 });
 
+
+app.post('/customer/orders/:id/rate', async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET ?? 'secret') as any;
+
+    const { rating, review, storeId, deliveryPartnerId } = req.body;
+    if (!rating || rating < 1 || rating > 5) return res.status(400).json({ message: 'rating 1-5 required' });
+
+    const orderId = req.params.id;
+    // Verify order belongs to this customer
+    const order = await prisma.customerOrder.findFirst({
+      where: { id: orderId, customerPhone: (await prisma.customer.findUnique({ where: { id: payload.id }, select: { phone: true } }))?.phone },
+    });
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    // Save rating in OrderStatusHistory as a review event
+    await prisma.orderStatusHistory.create({
+      data: {
+        orderId,
+        status: 'RATED',
+        note: JSON.stringify({ rating, review, storeId, deliveryPartnerId }),
+        actorType: 'CUSTOMER',
+        actorId: payload.id,
+      },
+    });
+
+    // Update delivery partner rating if provided
+    if (deliveryPartnerId) {
+      const dp = await prisma.deliveryPartner.findUnique({ where: { id: deliveryPartnerId } });
+      if (dp) {
+        const newRating = dp.rating
+          ? (Number(dp.rating) * (dp.totalDeliveries ?? 1) + rating) / ((dp.totalDeliveries ?? 1) + 1)
+          : rating;
+        await prisma.deliveryPartner.update({
+          where: { id: deliveryPartnerId },
+          data: { rating: newRating },
+        });
+      }
+    }
+
+    return res.json({ ok: true });
+  } catch (e: any) { return res.status(500).json({ message: e?.message }); }
+});
+
+// ─── GET /customers/wallet ────────────────────────────────────────────────────
+app.get('/customers/wallet', async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET ?? 'secret') as any;
+
+    const customer = await prisma.customer.findUnique({
+      where: { id: payload.id },
+      select: { id: true, walletBalance: true },
+    });
+    if (!customer) return res.status(404).json({ message: 'Not found' });
+
+    // Get wallet transactions from order history
+    const history = await prisma.orderStatusHistory.findMany({
+      where: { actorId: payload.id, status: { in: ['WALLET_CREDIT', 'WALLET_DEBIT', 'REFUND'] } },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+
+    const transactions = history.map(h => {
+      let parsed: any = {};
+      try { parsed = JSON.parse(h.note ?? '{}'); } catch {}
+      return {
+        id: h.id,
+        type: parsed.type ?? (h.status === 'WALLET_DEBIT' ? 'DEBIT' : 'CREDIT'),
+        amount: parsed.amount ?? 0,
+        description: parsed.description ?? h.status,
+        createdAt: h.createdAt,
+        orderId: h.orderId,
+      };
+    });
+
+    return res.json({
+      balance: Number((customer as any).walletBalance ?? 0),
+      transactions,
+    });
+  } catch (e: any) { return res.status(500).json({ message: e?.message }); }
+});
+
+// ─── POST /customers/wallet/topup ─────────────────────────────────────────────
+app.post('/customers/wallet/topup', async (req, res) => {
+  try {
+    const token = (req.headers.authorization ?? '').replace('Bearer ', '').trim();
+    const jwt = require('jsonwebtoken');
+    const payload = jwt.verify(token, process.env.JWT_SECRET ?? 'secret') as any;
+
+    const { amount } = req.body;
+    if (!amount || amount < 10 || amount > 10000) {
+      return res.status(400).json({ message: 'Amount must be between ₹10 and ₹10,000' });
+    }
+
+    const customer = await (prisma.customer as any).update({
+      where: { id: payload.id },
+      data: { walletBalance: { increment: Number(amount) } },
+      select: { walletBalance: true },
+    });
+
+    await prisma.orderStatusHistory.create({
+      data: {
+        orderId: 'wallet',  // dummy, use a wallet-specific table in production
+        status: 'WALLET_CREDIT',
+        note: JSON.stringify({ type: 'CREDIT', amount, description: 'Wallet top-up' }),
+        actorType: 'CUSTOMER',
+        actorId: payload.id,
+      },
+    }).catch(() => {}); // non-critical
+
+    return res.json({ ok: true, balance: Number(customer.walletBalance) });
+  } catch (e: any) { return res.status(500).json({ message: e?.message }); }
+});
+
+
 app.get("/api/orders/:id", async (req, res) => {
   try {
     const orderId = s(req.params.id);

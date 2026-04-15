@@ -36,6 +36,10 @@ model Partner {
   fullName        String
   partnerType     String
   token           String?          @unique
+  referralCode    String?          @unique
+  referredBy      String?
+  referralBonus   Decimal?         @default(0) @db.Decimal(10, 2)
+  profileImage    String?
   cookProfile     CookProfile?
   deliveryPartner DeliveryPartner?
   designerProfile DesignerProfile?
@@ -188,6 +192,7 @@ model MeatShop {
   updatedAt DateTime   @updatedAt
   closeTime String?
   openTime  String?
+  shopImage String?
   items     MeatItem[]
   partner   Partner    @relation(fields: [partnerId], references: [id], onDelete: Cascade)
 
@@ -207,6 +212,8 @@ model MeatItem {
   updatedAt  DateTime @updatedAt
   imageUrl   String?
   images     String[]
+  stock      Int?
+  category   String?
   shop       MeatShop @relation(fields: [meatShopId], references: [id], onDelete: Cascade)
 
   @@index([meatShopId])
@@ -489,16 +496,17 @@ model SubscriptionPlan {
 }
 
 model Customer {
-  id           String            @id @default(uuid())
-  fullName     String
-  phone        String            @unique
-  email        String?
-  token        String?           @unique
-  isActive     Boolean           @default(true)
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
-  passwordHash String
-  addresses    CustomerAddress[]
+  id            String            @id @default(uuid())
+  fullName      String
+  phone         String            @unique
+  email         String?
+  token         String?           @unique
+  isActive      Boolean           @default(true)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  passwordHash  String
+  walletBalance Decimal?          @default(0) @db.Decimal(10, 2)
+  addresses     CustomerAddress[]
 
   @@map("Customer")
 }
@@ -617,6 +625,22 @@ model ChatMessage {
 
   @@index([roomId])
   @@map("ChatMessage")
+}
+
+model Referral {
+  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  referrerId        String
+  refereeId         String    @unique(map: "Referral_refereeId_unique")
+  refereeType       String
+  status            String    @default("PENDING")
+  activatedAt       DateTime?
+  paidAt            DateTime?
+  bonusAmount       Decimal   @default(5000) @db.Decimal(10, 2)
+  refereeOrderCount Int       @default(0)
+  createdAt         DateTime  @default(now())
+
+  @@index([referrerId])
+  @@index([status])
 }
 
 enum PartnerStatus {
