@@ -333,6 +333,8 @@ model Delivery {
   pickupOtpVerified     Boolean         @default(false)
   pickupOtpVerifiedAt   DateTime?
   partner               DeliveryPartner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  pickupPhotoUrl    String?
+  deliveryPhotoUrl  String?
 
   @@index([status])
   @@index([partnerId])

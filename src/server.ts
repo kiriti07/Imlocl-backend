@@ -3139,6 +3139,84 @@ app.post("/api/delivery-partners/register", async (req, res) => {
   }
 });
 
+// ── Delivery Photo Upload ─────────────────────────────────────────────────────
+app.post('/api/deliveries/:id/photo', upload.single('photo'), async (req, res) => {
+  try {
+    const gate = await requireDeliveryPartnerApproved(req);
+    if (!gate.ok) return res.status(gate.status).json({ message: gate.message });
+
+    const deliveryId = s(req.params.id);
+    const photoType = s(req.body.photoType).toUpperCase(); // 'PICKUP' or 'DELIVERY'
+
+    if (!['PICKUP', 'DELIVERY'].includes(photoType)) {
+      return res.status(400).json({ message: "photoType must be 'PICKUP' or 'DELIVERY'" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ message: 'No photo uploaded' });
+    }
+
+    const deliveryPartner = await prisma.deliveryPartner.findUnique({
+      where: { partnerId: gate.partner.id },
+    });
+
+    if (!deliveryPartner) {
+      return res.status(404).json({ message: 'Delivery partner profile not found' });
+    }
+
+    const delivery = await prisma.delivery.findFirst({
+      where: { id: deliveryId, partnerId: deliveryPartner.id },
+    });
+
+    if (!delivery) {
+      return res.status(404).json({ message: 'Delivery not found' });
+    }
+
+    // Upload to Azure — reuse your existing uploadMeatItemImage helper
+    // Folder: delivery-partner-history/<partnerId>/<deliveryId>/
+    const folderName   = `delivery-partner-history/${gate.partner.id}/${deliveryId}`;
+    const fileName     = `${photoType.toLowerCase()}-${Date.now()}.jpg`;
+
+    const result = await uploadMeatItemImage(
+      req.file.buffer,
+      folderName,   // shopName param — used as folder prefix in Azure
+      photoType.toLowerCase(),
+      fileName
+    );
+
+    const photoUrl = result.url;
+
+    // Persist URL on the delivery row
+    const updateField = photoType === 'PICKUP'
+      ? { pickupPhotoUrl: photoUrl }
+      : { deliveryPhotoUrl: photoUrl };
+
+    const updated = await (prisma.delivery as any).update({
+      where: { id: deliveryId },
+      data: updateField,
+    });
+
+    // Log in order status history for audit trail
+    if (delivery.orderId) {
+      await prisma.orderStatusHistory.create({
+        data: {
+          orderId: delivery.orderId,
+          status: photoType === 'PICKUP' ? 'PICKUP_PHOTO_UPLOADED' : 'DELIVERY_PHOTO_UPLOADED',
+          note: `Photo taken by delivery partner: ${photoUrl}`,
+          actorType: 'DELIVERY_PARTNER',
+          actorId: gate.partner.id,
+        },
+      });
+    }
+
+    console.log(`✅ ${photoType} photo uploaded: ${photoUrl}`);
+    return res.json({ ok: true, photoUrl, delivery: updated });
+  } catch (e: any) {
+    console.error('DELIVERY PHOTO UPLOAD ERROR:', e);
+    return res.status(500).json({ message: e?.message ?? 'Server error' });
+  }
+});
+
 // ✅ Update partner availability
 app.put("/api/delivery-partners/:id/availability", async (req, res) => {
   try {

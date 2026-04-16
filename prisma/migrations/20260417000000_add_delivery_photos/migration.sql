@@ -1,0 +1,2 @@
+ALTER TABLE "Delivery" ADD COLUMN IF NOT EXISTS "pickupPhotoUrl" TEXT;
+ALTER TABLE "Delivery" ADD COLUMN IF NOT EXISTS "deliveryPhotoUrl" TEXT;
