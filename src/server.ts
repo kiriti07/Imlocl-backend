@@ -599,9 +599,16 @@ app.get("/api/customer/orders", async (req, res) => {
       return res.status(auth.status).json({ message: auth.message });
     }
 
+    const phone = String(auth.customer.phone ?? "").replace(/\D/g, "");
+    const phoneLast10 = phone.slice(-10);
+
+    // Fetch by both possible phone formats
     const orders = await prisma.customerOrder.findMany({
       where: {
-        customerPhone: auth.customer.phone,
+        OR: [
+          { customerPhone: auth.customer.phone },
+          { customerPhone: { endsWith: phoneLast10 } },
+        ],
       },
       include: {
         items: true,
@@ -628,11 +635,9 @@ app.get("/api/customer/orders/:id", async (req, res) => {
 
     const orderId = s(req.params.id);
 
-    const order = await prisma.customerOrder.findFirst({
-      where: {
-        id: orderId,
-        customerPhone: auth.customer.phone,
-      },
+    // First find the order by ID alone
+    const order = await prisma.customerOrder.findUnique({
+      where: { id: orderId },
       include: {
         items: true,
         statusHistory: {
@@ -645,12 +650,28 @@ app.get("/api/customer/orders/:id", async (req, res) => {
       return res.status(404).json({ message: "Order not found" });
     }
 
+    // Verify this customer owns it — check phone OR check if customer
+    // registered with a slightly different phone format
+    const orderPhone   = String(order.customerPhone ?? "").replace(/\D/g, "");
+    const customerPhone = String(auth.customer.phone ?? "").replace(/\D/g, "");
+
+    // Allow last-10-digits match to handle +91 prefix differences
+    const owned =
+      orderPhone === customerPhone ||
+      orderPhone.slice(-10) === customerPhone.slice(-10);
+
+    if (!owned) {
+      console.warn(`[AUTH MISMATCH] order.phone=${order.customerPhone} customer.phone=${auth.customer.phone}`);
+      return res.status(404).json({ message: "Order not found" });
+    }
+
     return res.json({ order });
   } catch (e: any) {
     console.error("CUSTOMER ORDER DETAIL ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
   }
 });
+
 
 // ── Push Token Registration ───────────────────────────────────────────────────
 app.post('/api/customer/push-token', async (req, res) => {
