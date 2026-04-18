@@ -629,43 +629,54 @@ app.get("/api/customer/orders", async (req, res) => {
 app.get("/api/customer/orders/:id", async (req, res) => {
   try {
     const auth = await customerAuthRequiredBasic(req);
-    if (!auth.ok) {
-      return res.status(auth.status).json({ message: auth.message });
-    }
+    if (!auth.ok) return res.status(auth.status).json({ message: auth.message });
 
     const orderId = s(req.params.id);
 
-    // First find the order by ID alone
     const order = await prisma.customerOrder.findUnique({
       where: { id: orderId },
       include: {
         items: true,
-        statusHistory: {
-          orderBy: { createdAt: "asc" },
-        },
+        statusHistory: { orderBy: { createdAt: "asc" } },
       },
     });
 
-    if (!order) {
-      return res.status(404).json({ message: "Order not found" });
-    }
+    if (!order) return res.status(404).json({ message: "Order not found" });
 
-    // Verify this customer owns it — check phone OR check if customer
-    // registered with a slightly different phone format
-    const orderPhone   = String(order.customerPhone ?? "").replace(/\D/g, "");
+    const orderPhone    = String(order.customerPhone ?? "").replace(/\D/g, "");
     const customerPhone = String(auth.customer.phone ?? "").replace(/\D/g, "");
+    const owned = orderPhone === customerPhone || orderPhone.slice(-10) === customerPhone.slice(-10);
+    if (!owned) return res.status(404).json({ message: "Order not found" });
 
-    // Allow last-10-digits match to handle +91 prefix differences
-    const owned =
-      orderPhone === customerPhone ||
-      orderPhone.slice(-10) === customerPhone.slice(-10);
-
-    if (!owned) {
-      console.warn(`[AUTH MISMATCH] order.phone=${order.customerPhone} customer.phone=${auth.customer.phone}`);
-      return res.status(404).json({ message: "Order not found" });
+    // ── Attach delivery info so customer tracking screen can match socket events ──
+    let delivery: any = null;
+    if ((order as any).deliveryId) {
+      delivery = await prisma.delivery.findUnique({
+        where: { id: (order as any).deliveryId },
+        select: {
+          id: true,
+          status: true,
+          estimatedDeliveryTime: true,
+          partner: {
+            include: {
+              partner: {
+                select: { id: true, fullName: true, phone: true },
+              },
+            },
+          },
+        },
+      });
     }
 
-    return res.json({ order });
+    return res.json({
+      order: {
+        ...order,
+        delivery: delivery ?? null,
+        deliveryPartnerId:   delivery?.partner?.partner?.id   ?? null,
+        deliveryPartnerName: delivery?.partner?.partner?.fullName ?? null,
+        deliveryPartnerPhone: delivery?.partner?.partner?.phone ?? null,
+      },
+    });
   } catch (e: any) {
     console.error("CUSTOMER ORDER DETAIL ERROR:", e);
     return res.status(500).json({ message: e?.message ?? "Server error" });
