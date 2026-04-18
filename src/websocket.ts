@@ -13,6 +13,7 @@ interface LocationUpdate {
 
 interface DeliveryTracking {
   deliveryId: string;
+  orderId?: string;
   partnerLocation?: LocationUpdate;
   subscribers: Set<string>;
   status: string;
@@ -20,6 +21,9 @@ interface DeliveryTracking {
 }
 
 const activeDeliveries = new Map<string, DeliveryTracking>();
+
+// orderId → deliveryId mapping so order-room subscribers get location updates
+const orderToDelivery = new Map<string, string>();
 
 function legacyRoom(deliveryId: string) {
   return `delivery-${deliveryId}`;
@@ -49,17 +53,47 @@ function sanitizeStatus(value: unknown, fallback = 'ASSIGNED') {
   return s || fallback;
 }
 
-function broadcastLocation(io: Server, deliveryId: string, payload: any) {
-  io.to(legacyRoom(deliveryId)).emit('partner-location', payload);
-  io.to(modernRoom(deliveryId)).emit('partner-location', payload);
+/**
+ * Broadcast location to:
+ * 1. delivery-${deliveryId} and delivery:${deliveryId} rooms (partner app / legacy)
+ * 2. order-${orderId} room (customer tracking screen)
+ *
+ * Emits both 'partner-location' (legacy) and 'delivery-partner-location-update'
+ * + 'location-update' (what the Customer App listens for).
+ */
+function broadcastLocation(io: Server, deliveryId: string, payload: any, orderId?: string) {
+  const fullPayload = { ...payload, deliveryId };
+
+  // ── Delivery rooms ──────────────────────────────────────────────────────────
+  // Legacy event name (partner app, DeliveryRouteMap)
+  io.to(legacyRoom(deliveryId)).emit('partner-location', fullPayload);
+  io.to(modernRoom(deliveryId)).emit('partner-location', fullPayload);
+
+  // Event names the Customer tracking screen listens for
+  io.to(legacyRoom(deliveryId)).emit('delivery-partner-location-update', fullPayload);
+  io.to(modernRoom(deliveryId)).emit('delivery-partner-location-update', fullPayload);
+  io.to(legacyRoom(deliveryId)).emit('location-update', fullPayload);
+  io.to(modernRoom(deliveryId)).emit('location-update', fullPayload);
+
+  // ── Order room ──────────────────────────────────────────────────────────────
+  // Customer App joins `order-${orderId}` via track-order event
+  if (orderId) {
+    io.to(`order-${orderId}`).emit('delivery-partner-location-update', fullPayload);
+    io.to(`order-${orderId}`).emit('location-update', fullPayload);
+    io.to(`order-${orderId}`).emit('partner-location', fullPayload);
+  }
 }
 
-function broadcastStatus(io: Server, deliveryId: string, payload: any) {
+function broadcastStatus(io: Server, deliveryId: string, payload: any, orderId?: string) {
   io.to(legacyRoom(deliveryId)).emit('delivery-status', payload);
   io.to(legacyRoom(deliveryId)).emit('delivery-status-updated', payload);
-
   io.to(modernRoom(deliveryId)).emit('delivery-status', payload);
   io.to(modernRoom(deliveryId)).emit('delivery-status-updated', payload);
+
+  if (orderId) {
+    io.to(`order-${orderId}`).emit('delivery-status-updated', payload);
+    io.to(`order-${orderId}`).emit('order-status-updated', payload);
+  }
 }
 
 function emitCurrentSnapshot(socket: any, deliveryId: string) {
@@ -73,7 +107,9 @@ function emitCurrentSnapshot(socket: any, deliveryId: string) {
   });
 
   if (delivery.partnerLocation) {
-    socket.emit('partner-location', {
+    const locationPayload = {
+      deliveryId,
+      orderId: delivery.orderId ?? null,
       lat: delivery.partnerLocation.lat,
       lng: delivery.partnerLocation.lng,
       timestamp: delivery.partnerLocation.timestamp,
@@ -81,7 +117,11 @@ function emitCurrentSnapshot(socket: any, deliveryId: string) {
       speed: delivery.partnerLocation.speed ?? null,
       accuracy: delivery.partnerLocation.accuracy ?? null,
       status: delivery.status,
-    });
+    };
+    // Send with all event names so any listener picks it up
+    socket.emit('partner-location', locationPayload);
+    socket.emit('delivery-partner-location-update', locationPayload);
+    socket.emit('location-update', locationPayload);
   }
 }
 
@@ -99,6 +139,8 @@ export function setupWebSocket(server: http.Server) {
   io.on('connection', (socket) => {
     console.log(`🟢 Client connected: ${socket.id}`);
 
+    // ── Room joins ────────────────────────────────────────────────────────────
+
     socket.on('join-store-room', (storeId: string) => {
       if (!storeId) return;
       socket.join(`store-${String(storeId)}`);
@@ -115,6 +157,10 @@ export function setupWebSocket(server: http.Server) {
       if (!orderId) return;
       socket.join(`order-${String(orderId)}`);
       console.log(`📦 ${socket.id} joined order-${String(orderId)}`);
+
+      // If we already know the delivery for this order, send snapshot immediately
+      const deliveryId = orderToDelivery.get(String(orderId));
+      if (deliveryId) emitCurrentSnapshot(socket, deliveryId);
     });
 
     socket.on('join-delivery-partner-room', (deliveryPartnerId: string) => {
@@ -134,15 +180,36 @@ export function setupWebSocket(server: http.Server) {
       const delivery = getOrCreateDelivery(normalizedDeliveryId);
       delivery.subscribers.add(socket.id);
 
-      console.log(`👤 Socket ${socket.id} joined delivery room ${normalizedDeliveryId}`);
-
+      console.log(`📦 Socket ${socket.id} joined delivery room ${normalizedDeliveryId}`);
       emitCurrentSnapshot(socket, normalizedDeliveryId);
     });
 
-    socket.on('track-delivery', (deliveryId: string) => {
-      const normalizedDeliveryId = String(deliveryId || '').trim();
-      if (!normalizedDeliveryId) return;
+    /**
+     * track-order — emitted by the Customer App tracking screen.
+     * data can be { orderId } object or a plain orderId string.
+     */
+    socket.on('track-order', (data: any) => {
+      const orderId = typeof data === 'string' ? data : data?.orderId;
+      if (!orderId) return;
 
+      const normalizedOrderId = String(orderId).trim();
+      socket.join(`order-${normalizedOrderId}`);
+      console.log(`📦 ${socket.id} tracking order ${normalizedOrderId}`);
+
+      // If we already know which delivery maps to this order, send snapshot
+      const deliveryId = orderToDelivery.get(normalizedOrderId);
+      if (deliveryId) emitCurrentSnapshot(socket, deliveryId);
+    });
+
+    /**
+     * track-delivery — emitted by the Customer App tracking screen once it
+     * knows the deliveryId from the order response.
+     */
+    socket.on('track-delivery', (data: any) => {
+      const deliveryId = typeof data === 'string' ? data : data?.deliveryId;
+      if (!deliveryId) return;
+
+      const normalizedDeliveryId = String(deliveryId).trim();
       socket.join(legacyRoom(normalizedDeliveryId));
       socket.join(modernRoom(normalizedDeliveryId));
 
@@ -150,7 +217,6 @@ export function setupWebSocket(server: http.Server) {
       delivery.subscribers.add(socket.id);
 
       console.log(`👤 Customer ${socket.id} tracking delivery ${normalizedDeliveryId}`);
-
       emitCurrentSnapshot(socket, normalizedDeliveryId);
     });
 
@@ -162,9 +228,7 @@ export function setupWebSocket(server: http.Server) {
       socket.leave(modernRoom(normalizedDeliveryId));
 
       const delivery = activeDeliveries.get(normalizedDeliveryId);
-      if (delivery) {
-        delivery.subscribers.delete(socket.id);
-      }
+      if (delivery) delivery.subscribers.delete(socket.id);
 
       console.log(`👤 Socket ${socket.id} left delivery room ${normalizedDeliveryId}`);
     });
@@ -194,9 +258,11 @@ export function setupWebSocket(server: http.Server) {
       console.log(`👤 Customer ${socket.id} stopped tracking delivery ${normalizedDeliveryId}`);
     });
 
+    // ── Location updates ──────────────────────────────────────────────────────
+
     socket.on('location-update', (data) => {
       try {
-        const { deliveryId, lat, lng, timestamp, heading, speed, accuracy, status } = data || {};
+        const { deliveryId, orderId, lat, lng, timestamp, heading, speed, accuracy, status } = data || {};
 
         if (!deliveryId || typeof lat !== 'number' || typeof lng !== 'number') {
           socket.emit('tracking-error', { message: 'Invalid location-update payload' });
@@ -204,32 +270,37 @@ export function setupWebSocket(server: http.Server) {
         }
 
         const normalizedDeliveryId = String(deliveryId);
-        const delivery = getOrCreateDelivery(normalizedDeliveryId, sanitizeStatus(status));
+        const normalizedOrderId    = orderId ? String(orderId) : undefined;
 
-        if (status) {
-          delivery.status = sanitizeStatus(status, delivery.status);
+        // Store orderId↔deliveryId mapping
+        if (normalizedOrderId) {
+          orderToDelivery.set(normalizedOrderId, normalizedDeliveryId);
         }
 
+        const delivery = getOrCreateDelivery(normalizedDeliveryId, sanitizeStatus(status));
+        if (status) delivery.status = sanitizeStatus(status, delivery.status);
+        if (normalizedOrderId) delivery.orderId = normalizedOrderId;
+
         delivery.partnerLocation = {
-          lat,
-          lng,
+          lat, lng,
           timestamp: timestamp ? new Date(timestamp) : new Date(),
-          heading: typeof heading === 'number' ? heading : null,
-          speed: typeof speed === 'number' ? speed : null,
+          heading:  typeof heading  === 'number' ? heading  : null,
+          speed:    typeof speed    === 'number' ? speed    : null,
           accuracy: typeof accuracy === 'number' ? accuracy : null,
         };
 
         console.log(`📍 Location update for delivery ${normalizedDeliveryId}: (${lat}, ${lng})`);
 
         broadcastLocation(io, normalizedDeliveryId, {
-          lat,
-          lng,
+          lat, lng,
+          orderId:   normalizedOrderId ?? null,
           timestamp: delivery.partnerLocation.timestamp,
-          heading: delivery.partnerLocation.heading ?? null,
-          speed: delivery.partnerLocation.speed ?? null,
-          accuracy: delivery.partnerLocation.accuracy ?? null,
-          status: delivery.status,
-        });
+          heading:   delivery.partnerLocation.heading  ?? null,
+          speed:     delivery.partnerLocation.speed    ?? null,
+          accuracy:  delivery.partnerLocation.accuracy ?? null,
+          status:    delivery.status,
+        }, normalizedOrderId);
+
       } catch (error) {
         console.error('❌ location-update error:', error);
         socket.emit('tracking-error', { message: 'Failed to process location update' });
@@ -238,7 +309,7 @@ export function setupWebSocket(server: http.Server) {
 
     socket.on('delivery-partner-location-update', (data) => {
       try {
-        const { deliveryId, lat, lng, timestamp, heading, speed, accuracy, status } = data || {};
+        const { deliveryId, orderId, lat, lng, timestamp, heading, speed, accuracy, status } = data || {};
 
         if (!deliveryId || typeof lat !== 'number' || typeof lng !== 'number') {
           socket.emit('tracking-error', {
@@ -248,18 +319,22 @@ export function setupWebSocket(server: http.Server) {
         }
 
         const normalizedDeliveryId = String(deliveryId);
-        const delivery = getOrCreateDelivery(normalizedDeliveryId, sanitizeStatus(status));
+        const normalizedOrderId    = orderId ? String(orderId) : undefined;
 
-        if (status) {
-          delivery.status = sanitizeStatus(status, delivery.status);
+        // Store orderId↔deliveryId mapping so order-room subscribers get updates
+        if (normalizedOrderId) {
+          orderToDelivery.set(normalizedOrderId, normalizedDeliveryId);
         }
 
+        const delivery = getOrCreateDelivery(normalizedDeliveryId, sanitizeStatus(status));
+        if (status) delivery.status = sanitizeStatus(status, delivery.status);
+        if (normalizedOrderId) delivery.orderId = normalizedOrderId;
+
         delivery.partnerLocation = {
-          lat,
-          lng,
+          lat, lng,
           timestamp: timestamp ? new Date(timestamp) : new Date(),
-          heading: typeof heading === 'number' ? heading : null,
-          speed: typeof speed === 'number' ? speed : null,
+          heading:  typeof heading  === 'number' ? heading  : null,
+          speed:    typeof speed    === 'number' ? speed    : null,
           accuracy: typeof accuracy === 'number' ? accuracy : null,
         };
 
@@ -268,14 +343,15 @@ export function setupWebSocket(server: http.Server) {
         );
 
         broadcastLocation(io, normalizedDeliveryId, {
-          lat,
-          lng,
+          lat, lng,
+          orderId:   normalizedOrderId ?? null,
           timestamp: delivery.partnerLocation.timestamp,
-          heading: delivery.partnerLocation.heading ?? null,
-          speed: delivery.partnerLocation.speed ?? null,
-          accuracy: delivery.partnerLocation.accuracy ?? null,
-          status: delivery.status,
-        });
+          heading:   delivery.partnerLocation.heading  ?? null,
+          speed:     delivery.partnerLocation.speed    ?? null,
+          accuracy:  delivery.partnerLocation.accuracy ?? null,
+          status:    delivery.status,
+        }, normalizedOrderId);
+
       } catch (error) {
         console.error('❌ delivery-partner-location-update error:', error);
         socket.emit('tracking-error', {
@@ -284,29 +360,36 @@ export function setupWebSocket(server: http.Server) {
       }
     });
 
+    // ── Status updates ────────────────────────────────────────────────────────
+
     socket.on('delivery-status', (data) => {
       try {
-        const { deliveryId, status, estimatedDeliveryTime } = data || {};
+        const { deliveryId, orderId, status, estimatedDeliveryTime } = data || {};
         if (!deliveryId || !status) {
           socket.emit('tracking-error', { message: 'Invalid delivery-status payload' });
           return;
         }
 
         const normalizedDeliveryId = String(deliveryId);
-        const delivery = getOrCreateDelivery(normalizedDeliveryId, sanitizeStatus(status));
+        const normalizedOrderId    = orderId ? String(orderId) : undefined;
 
+        const delivery = getOrCreateDelivery(normalizedDeliveryId, sanitizeStatus(status));
         delivery.status = sanitizeStatus(status, delivery.status);
-        if (estimatedDeliveryTime) {
-          delivery.estimatedDeliveryTime = String(estimatedDeliveryTime);
+        if (estimatedDeliveryTime) delivery.estimatedDeliveryTime = String(estimatedDeliveryTime);
+        if (normalizedOrderId) {
+          delivery.orderId = normalizedOrderId;
+          orderToDelivery.set(normalizedOrderId, normalizedDeliveryId);
         }
 
         console.log(`📦 Status update for delivery ${normalizedDeliveryId}: ${delivery.status}`);
 
         broadcastStatus(io, normalizedDeliveryId, {
           deliveryId: normalizedDeliveryId,
-          status: delivery.status,
+          orderId:    normalizedOrderId ?? null,
+          status:     delivery.status,
           estimatedDeliveryTime: delivery.estimatedDeliveryTime || null,
-        });
+        }, normalizedOrderId);
+
       } catch (error) {
         console.error('❌ delivery-status error:', error);
         socket.emit('tracking-error', { message: 'Failed to process delivery status' });
@@ -315,34 +398,39 @@ export function setupWebSocket(server: http.Server) {
 
     socket.on('delivery-status-updated', (data) => {
       try {
-        const { deliveryId, status, estimatedDeliveryTime } = data || {};
+        const { deliveryId, orderId, status, estimatedDeliveryTime } = data || {};
         if (!deliveryId || !status) {
           socket.emit('tracking-error', { message: 'Invalid delivery-status-updated payload' });
           return;
         }
 
         const normalizedDeliveryId = String(deliveryId);
-        const delivery = getOrCreateDelivery(normalizedDeliveryId, sanitizeStatus(status));
+        const normalizedOrderId    = orderId ? String(orderId) : undefined;
 
+        const delivery = getOrCreateDelivery(normalizedDeliveryId, sanitizeStatus(status));
         delivery.status = sanitizeStatus(status, delivery.status);
-        if (estimatedDeliveryTime) {
-          delivery.estimatedDeliveryTime = String(estimatedDeliveryTime);
+        if (estimatedDeliveryTime) delivery.estimatedDeliveryTime = String(estimatedDeliveryTime);
+        if (normalizedOrderId) {
+          delivery.orderId = normalizedOrderId;
+          orderToDelivery.set(normalizedOrderId, normalizedDeliveryId);
         }
 
         console.log(`📦 Modern status update for delivery ${normalizedDeliveryId}: ${delivery.status}`);
 
         broadcastStatus(io, normalizedDeliveryId, {
           deliveryId: normalizedDeliveryId,
-          status: delivery.status,
+          orderId:    normalizedOrderId ?? null,
+          status:     delivery.status,
           estimatedDeliveryTime: delivery.estimatedDeliveryTime || null,
-        });
+        }, normalizedOrderId);
+
       } catch (error) {
         console.error('❌ delivery-status-updated error:', error);
         socket.emit('tracking-error', { message: 'Failed to process modern delivery status' });
       }
     });
 
-    // ─── Live Chat ────────────────────────────────────────────────────────────────
+    // ── Live Chat ─────────────────────────────────────────────────────────────
 
     socket.on('agent-join-chat', (data: { roomId: string }) => {
       if (!data?.roomId) return;
@@ -429,6 +517,8 @@ export function setupWebSocket(server: http.Server) {
         console.error('❌ chat-mark-read error:', error);
       }
     });
+
+    // ── Disconnect ────────────────────────────────────────────────────────────
 
     socket.on('disconnect', () => {
       console.log(`🔴 Client disconnected: ${socket.id}`);
